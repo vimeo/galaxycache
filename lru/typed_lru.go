@@ -2,6 +2,7 @@
 
 /*
 Copyright 2013 Google Inc.
+Copyright 2022-2025 Vimeo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -120,6 +121,9 @@ func (c *TypedCache[K, V]) RemoveOldest() {
 func (c *TypedCache[K, V]) removeElement(e *llElem[typedEntry[K, V]]) {
 	c.ll.Remove(e)
 	kv := e.value
+	// Wait until after we've removed the element from the linked list
+	// before removing from the map so we can leverage weak pointers in
+	// the linked list/LRU stack.
 	delete(c.cache, kv.key)
 	if c.OnEvicted != nil {
 		c.OnEvicted(kv.key, kv.value)
