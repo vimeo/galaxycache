@@ -2,6 +2,7 @@
 
 /*
 Copyright 2013 Google Inc.
+Copyright 2022-2025 Vimeo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,6 +22,7 @@ package lru
 import (
 	"fmt"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestTypedGet(t *testing.T) {
@@ -90,6 +92,46 @@ func TestTypedEvict(t *testing.T) {
 		lru.Add(fmt.Sprintf("myKey%d", i), 1234)
 	}
 
+}
+
+func FuzzTypedAddRemove(f *testing.F) {
+	// Use a primitive bytecode scheme so the Fuzzer can add/remove/lookup objects pathwise and try to exercize as many states as possible
+	// we statically set the size to 16 entries to keep the state sane.
+	// "I" inserts the next key (with an empty value) up until the next recognized byte
+	// "D" deletes the next key (same as I -- up to the next recognized byte)
+	// "L" does a lookup for the next key (ditto)
+	// anything before a recognized command is ignored
+	f.Add("")
+	f.Add("IabcdLabcdDabcd")
+	f.Add("IabcLabcDabcIabcdLabcdDabcd")
+	f.Fuzz(func(t *testing.T, a string) {
+		l := TypedNew[string, struct{}](16)
+
+		cmd := ' '
+		keyStart := 0
+		for o, r := range a {
+			// skip invalid runes
+			if !utf8.ValidRune(r) {
+				continue
+			}
+			switch r {
+			case 'I', 'D', 'L':
+				key := a[keyStart:o]
+				switch cmd {
+				case 'I':
+					l.Add(key, struct{}{})
+				case 'D':
+					l.Remove(key)
+				case 'L':
+					l.Get(key)
+				}
+				cmd = r
+				// we need to start with the next rune
+				keyStart = o + utf8.RuneLen(r)
+			default:
+			}
+		}
+	})
 }
 
 func BenchmarkTypedGetAllHits(b *testing.B) {
