@@ -33,15 +33,30 @@ jobs:
           GO111MODULE: on
         run: go vet -mod=readonly ./...
 
+      - name: Vet k8swatch
+        env:
+          GO111MODULE: on
+        run: cd k8swatch && go vet -mod=readonly ./...
+
       - name: Test
         env:
           GO111MODULE: on
         run: go test -mod=readonly -count 2 ./...
 
+      - name: Test k8swatch
+        env:
+          GO111MODULE: on
+        run: cd k8swatch && go test -mod=readonly ./...
+
       - name: Race Test
         env:
           GO111MODULE: on
         run: go test -race -mod=readonly -count 2 ./...
+
+      - name: Race Test k8swatch
+        env:
+          GO111MODULE: on
+        run: cd k8swatch && go test -race -mod=readonly -count 2 ./...
 
         # Run all consistenthash Fuzz tests for 30s with go 1.24
       - name: Fuzz Consistent-Hash
