@@ -46,7 +46,7 @@ jobs:
       - name: Test k8swatch
         env:
           GO111MODULE: on
-        run: cd k8swatch && go test -mod=readonly ./...
+        run: cd k8swatch && go test -mod=readonly -count 2 ./...
 
       - name: Race Test
         env:
@@ -57,6 +57,14 @@ jobs:
         env:
           GO111MODULE: on
         run: cd k8swatch && go test -race -mod=readonly -count 2 ./...
+
+        # We ran the k8swatch tests with whatever galaxycache module version
+        # was set in that submodule's go.mod earlier. Run it with this version
+        # now. (using a go.work to create that linkage)
+      - name: Test k8swatch with go.work
+        env:
+          GO111MODULE: on
+        run: go work init . ./k8swatch && cd k8swatch && go test -mod=readonly -count 2 ./...
 
         # Run all consistenthash Fuzz tests for 30s with go 1.24
       - name: Fuzz Consistent-Hash

@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,10 +31,11 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/vimeo/galaxycache/promoter"
-	"github.com/vimeo/go-clocks/fake"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
+
+	"github.com/vimeo/galaxycache/promoter"
+	"github.com/vimeo/go-clocks/fake"
 )
 
 const (
@@ -207,6 +207,12 @@ func (proto *TestProtocol) NewFetcher(url string) (RemoteFetcher, error) {
 	return newTestFetcher, nil
 }
 
+type neverPromotePromoter struct{}
+
+func (n neverPromotePromoter) ShouldPromote(key string, data []byte, stats promoter.Stats) bool {
+	return false
+}
+
 // TestPeers tests to ensure that an instance with given hash
 // function results in the expected number of gets both locally and into each other peer
 func TestPeers(t *testing.T) {
@@ -240,7 +246,7 @@ func TestPeers(t *testing.T) {
 		{
 			testName:     "cached_base",
 			numGets:      200,
-			expectedHits: map[string]int{"fetcher0": 0, "fetcher1": 48, "fetcher2": 47, "fetcher3": 48},
+			expectedHits: map[string]int{"fetcher0": 0, "fetcher1": 50, "fetcher2": 50, "fetcher3": 50},
 			cacheSize:    1 << 20,
 			initFunc: func(g *Galaxy, fetchers map[string]*TestFetcher) {
 				fetchers["fetcher0"] = &TestFetcher{}
@@ -274,11 +280,6 @@ func TestPeers(t *testing.T) {
 				TestFetchers: make(map[string]*TestFetcher),
 			}
 
-			// Initialize source to a deterministic state so we will have
-			// predictable hotCache result (given the current 10%-of-the-time
-			// method for putting items in the hotCache)
-			rand.Seed(123)
-
 			universe := NewUniverseWithOpts(testproto, "fetcher0", hashOpts)
 			dummyCtx := context.TODO()
 
@@ -292,7 +293,7 @@ func TestPeers(t *testing.T) {
 				return dest.UnmarshalBinary([]byte("got:" + key))
 			}
 
-			testGalaxy := universe.NewGalaxy("TestPeers-galaxy", tc.cacheSize, GetterFunc(getter), WithPromoter(&promoter.ProbabilisticPromoter{ProbDenominator: 10}))
+			testGalaxy := universe.NewGalaxy("TestPeers-galaxy", tc.cacheSize, GetterFunc(getter), WithPromoter(neverPromotePromoter{}))
 
 			if tc.initFunc != nil {
 				tc.initFunc(testGalaxy, testproto.TestFetchers)

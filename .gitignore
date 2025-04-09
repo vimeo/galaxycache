@@ -1,2 +1,4 @@
 .DS_Store
 *.sw[op]
+go.work
+go.work.sum

@@ -22,10 +22,10 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"net"
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	k8score "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -147,8 +147,7 @@ func TestUpdateCB(t *testing.T) {
 		fetchCalls: []recordingNullFetchFetchArgs{},
 		knownPeers: map[string]struct{}{},
 	}
-	selfHP := net.JoinHostPort(selfPodIP, "8080")
-	universe := galaxycache.NewUniverse(&fp, selfHP)
+	universe := galaxycache.NewUniverse(&fp, selfPod.Name)
 
 	const portNum = 20124
 
@@ -245,6 +244,127 @@ func TestUpdateCB(t *testing.T) {
 		if expURLs := map[string]struct{}{"10.20.30.42:20124": {}}; !maps.Equal(f.knownPeers, expURLs) {
 			t.Errorf("unexpected knownPeers: got %v; want %v", f.knownPeers, expURLs)
 		}
+	}
+	// Verify that the pod gets removed when it becomes not-ready
+	someOtherReadyPod.Status.Conditions[0].Status = k8score.ConditionFalse
+	watcher.Modify(someOtherReadyPod)
+	<-k8sEventCh
+	{
+		f := fp.clone()
+
+		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit"}}; !slices.Equal(f.fetchCalls, expCalls) {
+			t.Errorf("unexpected fetchCalls: got %v; want %v", f.fetchCalls, expCalls)
+		}
+		if expURLs := map[string]struct{}{}; !maps.Equal(f.knownPeers, expURLs) {
+			t.Errorf("unexpected knownPeers: got %v; want %v", f.knownPeers, expURLs)
+		}
+	}
+
+	pwCancel()
+	<-doneCh
+}
+
+func TestUpdateCBSelfRemove(t *testing.T) {
+	// create a fake watcher for tests
+	watcher := watch.NewFake()
+
+	selfPodIP := "127.0.0.1"
+
+	selfPod := newTestPod(selfPodIP, map[string]string{"app": "testGalaxycache"}, k8score.ConditionFalse)
+	someOtherReadyPod := newTestPod("10.20.30.42", map[string]string{"app": "testGalaxycache"}, k8score.ConditionTrue)
+
+	// initialize a kubernetesClient struct for the tests
+	clientset := fake.NewSimpleClientset(selfPod, someOtherReadyPod)
+	clientset.PrependWatchReactor("pods", testcore.DefaultWatchReactor(watcher, nil))
+
+	universe := galaxycache.NewUniverse(&galaxycache.NullFetchProtocol{}, selfPod.Name)
+	// TODO: make these calls direct references to universe after go.mod
+	// has been bumped so we can guarantee that these methods are always
+	// present.
+	enhancedU, isEnhanced := any(universe).(interface {
+		SelfID() string
+		IncludeSelf() bool
+	})
+	if !isEnhanced {
+		t.Skip("galaxycache module is too old to support management of IncludeSelf")
+	}
+
+	const portNum = 20124
+
+	// Setup a channel to notify us when the callback has run.
+	k8sEventCh := make(chan struct{}, 1)
+
+	uCB := UpdateCB(universe, portNum)
+	pw := k8swatcher.NewPodWatcher(clientset, testPodNamespace, "app=testGalaxycache", func(ctx context.Context, event k8swatcher.PodEvent) {
+		defer func() { k8sEventCh <- struct{}{} }()
+		t.Logf("event type %[1]T: %+[1]v", event) // log the events to make it easier to debug
+		uCB(ctx, event)
+	})
+
+	pwCtx, pwCancel := context.WithCancel(context.Background())
+	defer pwCancel()
+
+	universe.SetIncludeSelf(true)
+	doneCh := make(chan struct{}) // closed when done
+	go func() {
+		defer close(doneCh)
+		if pwErr := pw.Run(pwCtx); pwErr != nil {
+			t.Errorf("podwatcher failed: %s", pwErr)
+		}
+	}()
+
+	// The initial dump should include two CreatePod and one InitialListComplete
+	<-k8sEventCh
+	<-k8sEventCh
+	<-k8sEventCh
+	if !enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = true; got false (after initial dump)")
+	}
+
+	watcher.Add(someOtherReadyPod)
+	<-k8sEventCh
+	if !enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = true; got false (after adding another ready pod)")
+	}
+
+	// make the self-pod ready
+	selfPod.Status.Conditions[0].Status = k8score.ConditionTrue
+	watcher.Modify(selfPod)
+	<-k8sEventCh
+	if !enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = true; got false (after self pod is marked as ready)")
+	}
+
+	// make the self-pod not-ready again
+	selfPod.Status.Conditions[0].Status = k8score.ConditionFalse
+	watcher.Modify(selfPod)
+	<-k8sEventCh
+	if !enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = true; got false (after self is marked as not-ready)")
+	}
+
+	// make the self-pod ready again
+	selfPod.Status.Conditions[0].Status = k8score.ConditionTrue
+	watcher.Modify(selfPod)
+	<-k8sEventCh
+	if !enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = true; got false (after self pod is marked as ready again)")
+	}
+
+	// mark the self-pod as pending deletion
+	selfPod.DeletionTimestamp = &metav1.Time{Time: time.Now().Add(time.Hour)}
+	watcher.Modify(selfPod)
+	<-k8sEventCh
+	if enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = false; got true (after self pod is marked with DeletionTimestamp)")
+	}
+
+	// Reset so we can test the DeletePod event as well
+	universe.SetIncludeSelf(true)
+	watcher.Delete(selfPod)
+	<-k8sEventCh
+	if enhancedU.IncludeSelf() {
+		t.Error("expected IncludeSelf = false; got true (after deleting self pod)")
 	}
 
 	pwCancel()
