@@ -361,6 +361,12 @@ func (pp *PeerPicker) regenerateHashringLocked() {
 	pp.mapGen++
 }
 
+func (pp *PeerPicker) includeSelfVal() bool {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+	return pp.includeSelf
+}
+
 func (pp *PeerPicker) setIncludeSelf(inc bool) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()

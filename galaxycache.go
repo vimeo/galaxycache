@@ -207,15 +207,16 @@ func (universe *Universe) Set(peerURLs ...string) error {
 // SetPeers updates the Universe's list of peers (contained in the PeerPicker).
 // Each Peer's URI value should be a valid base URL, while the ID may be anything that's unique,
 // for example "example.net:8000".
-// If Set and SetPeers are mixed, the ID and URI fields must match.
+// If AddPeer, Set and SetPeers are mixed, the ID and URI fields must match.
 func (universe *Universe) SetPeers(peers ...Peer) error {
 	return universe.peerPicker.set(peers...)
 }
 
 // AddPeer updates the Universe's list of peers to include the passed peer (contained in the PeerPicker).
-// The Peer's URI value should be a valid base URL, while the ID may be anything that's unique,
-// for example "example.net:8000".
-// If Set and AddPeer are mixed, the ID and URI fields must match.
+// The Peer's URI value should be a valid base URL as understood by the RemoteFetcher implementation, while the ID may
+// be anything that's unique, for example "example.net:8000" (However, in k8s, it's recommended to use a pod name
+// (possibly with some qualification)).
+// If Set, SetPeers and AddPeer calls are mixed, the ID and URI fields must match.
 func (universe *Universe) AddPeer(peer Peer) error {
 	return universe.peerPicker.add(peer)
 }
@@ -223,6 +224,13 @@ func (universe *Universe) AddPeer(peer Peer) error {
 // SetIncludeSelf toggles the inclusion of the "self ID" for the universe in the PeerPicker's hash-ring
 func (universe *Universe) SetIncludeSelf(incSelf bool) {
 	universe.peerPicker.setIncludeSelf(incSelf)
+}
+
+// IncludeSelf returns a bool indicating whether the "self ID" for the universe is currently included in the
+// PeerPicker's hash-ring
+// This is generally not useful oustide of tests that need to verify whether events are being handled correctly.
+func (universe *Universe) IncludeSelf() bool {
+	return universe.peerPicker.includeSelfVal()
 }
 
 // RemovePeers updates the Universe's list of peers to remove the passed peers IDs (contained in the PeerPicker).
@@ -241,6 +249,12 @@ func (universe *Universe) ListPeers() map[string]RemoteFetcher {
 // Shutdown closes all open fetcher connections
 func (universe *Universe) Shutdown() error {
 	return universe.peerPicker.shutdown()
+}
+
+// SelfID returns the selfID that was passed to the constructor and is used for
+// self-identification in the hash-ring.
+func (universe *Universe) SelfID() string {
+	return universe.peerPicker.selfID
 }
 
 // HCStatsWithTime includes a time stamp along with the hotcache stats
