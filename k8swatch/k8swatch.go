@@ -35,30 +35,23 @@ func handlePodUpdate(u *galaxycache.Universe, event k8swatcher.PodEvent, port in
 // The port should be the integer port-number on which this galaxycache
 // universe is registered with a gRPC server (or similar).
 func UpdateCB(u *galaxycache.Universe, port int) k8swatcher.EventCallback {
-	// Use a type-assert so we can handle some version skew with older
-	// versions of galaxycache (until we have a new release and update the
-	// k8swatch go.mod to require it)
-	isSelf := func(event k8swatcher.PodEvent) bool { return false }
-	if ui, ok := any(u).(interface{ SelfID() string }); ok {
-		selfID := ui.SelfID()
-		isSelf = func(event k8swatcher.PodEvent) bool { return event.PodName() == selfID }
-	}
+	selfID := u.SelfID()
 	return func(ctx context.Context, event k8swatcher.PodEvent) {
 		switch ut := event.(type) {
 		case *k8swatcher.CreatePod:
-			if isSelf(event) {
+			if event.PodName() == selfID {
 				handleSelfUpdate(u, ut.Def)
 				return
 			}
 			handlePodUpdate(u, event, port, ut.IsReady(), ut.IP)
 		case *k8swatcher.ModPod:
-			if isSelf(event) {
+			if event.PodName() == selfID {
 				handleSelfUpdate(u, ut.Def)
 				return
 			}
 			handlePodUpdate(u, event, port, ut.IsReady(), ut.IP)
 		case *k8swatcher.DeletePod:
-			if isSelf(event) {
+			if event.PodName() == selfID {
 				// shouldn't happen, but handle it anyway
 				u.SetIncludeSelf(false)
 				return
