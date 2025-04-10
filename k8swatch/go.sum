@@ -183,8 +183,8 @@ github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81P
 github.com/stretchr/testify v1.5.1/go.mod h1:5W2xD1RspED5o8YsWQXVCued0rvSQ+mT+I5cxcmMvtA=
 github.com/stretchr/testify v1.7.0 h1:nwc3DEeHmmLAfoZucVR881uASk0Mfjw8xYJ99tb5CcY=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
-github.com/vimeo/galaxycache v1.1.0 h1:da21nkyVyRWwfNAFoxrG0NKA8dTKh8gTfrFJqgc1B9A=
-github.com/vimeo/galaxycache v1.1.0/go.mod h1:J9AlMgNhN4g3DK3v51slzMVmsjXEtwyBbjqfNaV4Ip0=
+github.com/vimeo/galaxycache v1.1.1 h1:PsfmNqAvHyTHEKYLMkgLZclw/vG5lyyfTcOtwDDWaXU=
+github.com/vimeo/galaxycache v1.1.1/go.mod h1:J9AlMgNhN4g3DK3v51slzMVmsjXEtwyBbjqfNaV4Ip0=
 github.com/vimeo/go-clocks v1.1.2 h1:HAh+gZT4PIIWJEIc/cXi1EPExZWMUgL/9lO0SA+EPrw=
 github.com/vimeo/go-clocks v1.1.2/go.mod h1:coJz9AfolJ/xWbjgudyoJew7Kw/kV17P3fLIumNLjEg=
 github.com/vimeo/go-retry v1.1.0 h1:gTbkj1F+Yo15QEJvMl6zmzgSAggX91/SoXL5z0rh/II=

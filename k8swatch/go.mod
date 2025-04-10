@@ -3,8 +3,9 @@ module github.com/vimeo/galaxycache/k8swatch
 go 1.20
 
 require (
-	github.com/vimeo/galaxycache v1.1.0
+	github.com/vimeo/galaxycache v1.1.1
 	github.com/vimeo/k8swatcher v1.3.0
+	k8s.io/api v0.22.2
 	k8s.io/apimachinery v0.22.2
 	k8s.io/client-go v0.22.2
 )
@@ -40,7 +41,6 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b // indirect
-	k8s.io/api v0.22.2 // indirect
 	k8s.io/klog/v2 v2.9.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20210421082810-95288971da7e // indirect
 	k8s.io/utils v0.0.0-20210819203725-bdf08cb9a70a // indirect

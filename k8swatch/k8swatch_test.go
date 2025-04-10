@@ -278,16 +278,6 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	clientset.PrependWatchReactor("pods", testcore.DefaultWatchReactor(watcher, nil))
 
 	universe := galaxycache.NewUniverse(&galaxycache.NullFetchProtocol{}, selfPod.Name)
-	// TODO: make these calls direct references to universe after go.mod
-	// has been bumped so we can guarantee that these methods are always
-	// present.
-	enhancedU, isEnhanced := any(universe).(interface {
-		SelfID() string
-		IncludeSelf() bool
-	})
-	if !isEnhanced {
-		t.Skip("galaxycache module is too old to support management of IncludeSelf")
-	}
 
 	const portNum = 20124
 
@@ -317,13 +307,13 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	<-k8sEventCh
 	<-k8sEventCh
 	<-k8sEventCh
-	if !enhancedU.IncludeSelf() {
+	if !universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = true; got false (after initial dump)")
 	}
 
 	watcher.Add(someOtherReadyPod)
 	<-k8sEventCh
-	if !enhancedU.IncludeSelf() {
+	if !universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = true; got false (after adding another ready pod)")
 	}
 
@@ -331,7 +321,7 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	selfPod.Status.Conditions[0].Status = k8score.ConditionTrue
 	watcher.Modify(selfPod)
 	<-k8sEventCh
-	if !enhancedU.IncludeSelf() {
+	if !universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = true; got false (after self pod is marked as ready)")
 	}
 
@@ -339,7 +329,7 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	selfPod.Status.Conditions[0].Status = k8score.ConditionFalse
 	watcher.Modify(selfPod)
 	<-k8sEventCh
-	if !enhancedU.IncludeSelf() {
+	if !universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = true; got false (after self is marked as not-ready)")
 	}
 
@@ -347,7 +337,7 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	selfPod.Status.Conditions[0].Status = k8score.ConditionTrue
 	watcher.Modify(selfPod)
 	<-k8sEventCh
-	if !enhancedU.IncludeSelf() {
+	if !universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = true; got false (after self pod is marked as ready again)")
 	}
 
@@ -355,7 +345,7 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	selfPod.DeletionTimestamp = &metav1.Time{Time: time.Now().Add(time.Hour)}
 	watcher.Modify(selfPod)
 	<-k8sEventCh
-	if enhancedU.IncludeSelf() {
+	if universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = false; got true (after self pod is marked with DeletionTimestamp)")
 	}
 
@@ -363,7 +353,7 @@ func TestUpdateCBSelfRemove(t *testing.T) {
 	universe.SetIncludeSelf(true)
 	watcher.Delete(selfPod)
 	<-k8sEventCh
-	if enhancedU.IncludeSelf() {
+	if universe.IncludeSelf() {
 		t.Error("expected IncludeSelf = false; got true (after deleting self pod)")
 	}
 
