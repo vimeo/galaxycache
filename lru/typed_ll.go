@@ -20,11 +20,6 @@ package lru
 
 import "fmt"
 
-// Default-disable paranoid checks so they get compiled out.
-// If this const is renamed/moved/updated make sure to update the sed
-// expression in the github action. (.github/workflows/go.yml)
-const paranoidLL = false
-
 // LinkedList using generics to reduce the number of heap objects
 // Used for the LRU stack in TypedCache
 type linkedList[T any] struct {
