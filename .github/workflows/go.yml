@@ -78,6 +78,11 @@ jobs:
         env:
           GO111MODULE: on
         run: |
-          sed -e 's/const paranoidLL = false/const paranoidLL = true/' < lru/typed_ll.go > lru/typed_ll.go.new
-          mv lru/typed_ll.go.new lru/typed_ll.go
-          go test -race -mod=readonly -count 2 ./...
+          go test --tags=paranoidgcll -race -mod=readonly -count 2 ./...
+ 
+        # Run the lru Fuzz tests for 30s with go 1.24 (in paranoid mode)
+      - name: Fuzz Consistent-Hash
+        if: ${{matrix.goversion == '1.24'}}
+        env:
+          GO111MODULE: on
+        run: go test --tags=paranoidgcll -fuzz=. -fuzztime=30s ./lru

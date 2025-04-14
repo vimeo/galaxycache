@@ -21,8 +21,9 @@ package lru
 
 import (
 	"fmt"
+	"runtime"
+	"strconv"
 	"testing"
-	"unicode/utf8"
 )
 
 func TestTypedGet(t *testing.T) {
@@ -95,40 +96,59 @@ func TestTypedEvict(t *testing.T) {
 }
 
 func FuzzTypedAddRemove(f *testing.F) {
-	// Use a primitive bytecode scheme so the Fuzzer can add/remove/lookup objects pathwise and try to exercize as many states as possible
-	// we statically set the size to 16 entries to keep the state sane.
-	// "I" inserts the next key (with an empty value) up until the next recognized byte
-	// "D" deletes the next key (same as I -- up to the next recognized byte)
-	// "L" does a lookup for the next key (ditto)
-	// anything before a recognized command is ignored
-	f.Add("")
-	f.Add("IabcdLabcdDabcd")
-	f.Add("IabcLabcDabcIabcdLabcdDabcd")
-	f.Fuzz(func(t *testing.T, a string) {
-		l := TypedNew[string, struct{}](16)
 
-		cmd := ' '
-		keyStart := 0
-		for o, r := range a {
-			// skip invalid runes
-			if !utf8.ValidRune(r) {
-				continue
-			}
-			switch r {
-			case 'I', 'D', 'L':
-				key := a[keyStart:o]
-				switch cmd {
-				case 'I':
-					l.Add(key, struct{}{})
-				case 'D':
-					l.Remove(key)
-				case 'L':
-					l.Get(key)
+	// Use a primitive bytecode scheme so the Fuzzer can add/remove/lookup objects pathwise and try to exercise as many states as possible
+	// we statically set the size to 16 entries to keep the state sane (and make it more likely that we'll evict things).
+	// Each byte of input is an instruction
+	// The top 2 bits indicate an operation, and the lower 6 bits indicate either a key or an action
+	// 0b01 inserts a value with the lower 6 bits as the key
+	// 0b10 issues a lookup for the key with the lower 6 bits
+	// 0b11 deletes the key with the lower 6 bits
+	// 0b00 is either a force-GC op and an insert op depending on the lower 6 bits
+	//   - if even, it's a serial GC
+	//   - if odd, it's a parallel GC
+	// Forced GCs are rate-limited to once every 100 gcInsOps
+	//
+	// Values are integers that are computed as the square of the key (the lower 6-bits)
+	const (
+		insOp   uint8 = 0b0100_0000
+		lookOp  uint8 = 0b1000_0000
+		delOp   uint8 = 0b1100_0000
+		gcInsOp uint8 = 0b0000_0000
+	)
+	f.Add([]byte{})
+	f.Add([]byte{insOp | 0x0a, insOp | 0x01, insOp | 0x33, lookOp | 0x01, lookOp | 0x02, gcInsOp | 0x01})
+	f.Add([]byte{insOp | 0x01, insOp | 0x02, insOp | 0x03, lookOp | 0x02, insOp | 0x04, insOp | 0x05, delOp | 0x01})
+	gcCount := 0
+	f.Fuzz(func(t *testing.T, a []byte) {
+		l := TypedNew[uint8, uint16](16) // keep it small
+		for _, opCode := range a {
+			op := uint8(opCode) & 0b1100_0000
+			key := uint8(opCode) & 0b0011_1111
+			val := uint16(key) * uint16(key)
+			switch op {
+			case insOp:
+				l.Add(key, val)
+			case lookOp:
+				if v, ok := l.Get(key); ok && v != val {
+					panic("got incorrect value with cache-hit: key " + strconv.Itoa(int(key)) + " value " + strconv.Itoa(int(v)))
 				}
-				cmd = r
-				// we need to start with the next rune
-				keyStart = o + utf8.RuneLen(r)
-			default:
+			case delOp:
+				l.Remove(key)
+			case gcInsOp:
+				if gcCount%200 > 1 {
+					l.Add(key, val)
+				} else if key&1 == 0 {
+					l.Add(key, val)
+					runtime.GC()
+				} else {
+					d := make(chan struct{})
+					go func() { defer close(d); runtime.GC() }()
+					runtime.Gosched() // Give the GC a moment to start
+					l.Add(key, val)
+					<-d
+				}
+				gcCount++
 			}
 		}
 	})
