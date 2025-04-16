@@ -17,6 +17,7 @@ limitations under the License.
 package consistenthash
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"testing"
@@ -111,7 +112,7 @@ func TestConsistency(t *testing.T) {
 
 }
 
-func TestGetReplicated(t *testing.T) {
+func TestGetReplicatedHappyPath(t *testing.T) {
 	hr := New(20, nil)
 	hr.Add("Bill", "Bob", "Bonny", "Clyde", "Computer", "Long")
 
@@ -152,6 +153,193 @@ func TestGetReplicated(t *testing.T) {
 				// versions)
 				if gdo, gro := hr.idxedKeyReplica(string(append([]byte(k), 0xaa, 0xaa, 0x01)), 0), hr.idxedKeyReplica(k, 1); gdo != gro {
 					t.Errorf("mismatched second object-hashes for %q direct() = %d; keyed() = %d", k, gdo, gro)
+				}
+			}
+		})
+	}
+}
+
+func TestGetReplicatedChosenHashes(t *testing.T) {
+	type keyReplID struct {
+		k string
+		r int
+	}
+	for _, itbl := range []struct {
+		name       string
+		baseHashes map[string]uint32
+		replHashes map[keyReplID]uint32
+		segsPerKey int // most cases will set this to 1 (must be < 128 for test-purposes)
+		ownerKeys  []string
+		// map from key to expected owners
+		// inner value is ordered (by replica-number)
+		expKeyOwners map[string][]string
+		qReplicas    int // must be >1 to do anything interesting
+	}{
+		{
+			name:       "simple_2_replicas_no_collision",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 1,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"fizzle": 5, // put fizzle in apple's range
+			},
+			qReplicas: 2,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 35,
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"apple", "strawberry"},
+			},
+		},
+		{
+			name:       "2_replicas_collision",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 1,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"fizzle": 5, // put fizzle in apple's range
+			},
+			qReplicas: 2,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 9,
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"apple", "orange"},
+			},
+		},
+		{
+			name:       "2_replicas_collision_exact",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 1,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"fizzle": 5, // put fizzle in apple's range
+			},
+			qReplicas: 2,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 10,
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"apple", "orange"},
+			},
+		},
+		{
+			name:       "3_replicas_collision_exact",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 1,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"fizzle": 5, // put fizzle in apple's range
+			},
+			qReplicas: 3,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 10,
+				{k: "fizzle", r: 2}: 20,
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"apple", "orange", "pear"},
+			},
+		},
+		{
+			name:       "3_replicas_wrap_around",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 1,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"fizzle": 5, // put fizzle in apple's range
+			},
+			qReplicas: 3,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 10,
+				{k: "fizzle", r: 2}: 0xffff, // much larger than "0plum"
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"apple", "orange", "pear"},
+			},
+		},
+		{
+			name:       "3_replicas_wrap_around_segs_per_key_2",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 2,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"1apple": 110, "1orange": 120,
+				"1pear": 130, "1strawberry": 140,
+				"1peach": 150, "1plum": 160,
+				"fizzle": 15, // put fizzle in orange's range
+			},
+			qReplicas: 3,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 55,
+				{k: "fizzle", r: 2}: 160, // equal to 1plum
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"orange", "plum", "apple"},
+			},
+		},
+		{
+			name:       "3_replicas_wrap_around_collision",
+			ownerKeys:  []string{"apple", "orange", "pear", "strawberry", "peach", "plum"},
+			segsPerKey: 1,
+			baseHashes: map[string]uint32{
+				"0apple": 10, "0orange": 20,
+				"0pear": 30, "0strawberry": 40,
+				"0peach": 50, "0plum": 60,
+				"fizzle": 5,  // put fizzle in apple's range
+				"boop":   51, // put boop in plum's range
+			},
+			qReplicas: 3,
+			replHashes: map[keyReplID]uint32{
+				{k: "fizzle", r: 1}: 55,
+				{k: "fizzle", r: 2}: 60,
+				{k: "boop", r: 1}:   55,
+				{k: "boop", r: 2}:   60,
+			},
+			expKeyOwners: map[string][]string{
+				"fizzle": {"apple", "plum", "orange"},
+				"boop":   {"plum", "apple", "orange"},
+			},
+		},
+	} {
+		tbl := itbl
+		t.Run(tbl.name, func(t *testing.T) {
+			hashFn := func(b []byte) uint32 {
+				bk, suf, ok := bytes.Cut(b, []byte{0xaa, 0xaa})
+				if !ok {
+					return tbl.baseHashes[string(b)]
+				}
+				if len(suf) != 1 || suf[0] > 127 {
+					panic("varint suffix too long (replicas > 127?)")
+				}
+				return tbl.replHashes[keyReplID{k: string(bk), r: int(suf[0])}]
+			}
+			hr := New(tbl.segsPerKey, hashFn)
+			hr.Add(tbl.ownerKeys...)
+			for k, expOwners := range tbl.expKeyOwners {
+				owners := hr.GetReplicated(k, tbl.qReplicas)
+				if len(owners) != len(expOwners) {
+					t.Errorf("unexpected number of owners returned: got %d; want %d\n got: %v\nwant: %v",
+						len(owners), len(expOwners), owners, expOwners)
+					continue
+				}
+				for i, owner := range owners {
+					expOwner := expOwners[i]
+					if owner != expOwner {
+						t.Errorf("owner at index %d does not match expectation:\n got: %q\nwant: %q",
+							i, owner, expOwner)
+					}
 				}
 			}
 		})

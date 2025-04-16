@@ -1,5 +1,6 @@
 /*
 Copyright 2013 Google Inc.
+Copyright 2020-2025 Vimeo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,9 +32,12 @@ type Hash func(data []byte) uint32
 type Map struct {
 	hash       Hash
 	segsPerKey int
-	keyHashes  []uint32 // Sorted
-	hashMap    map[uint32]string
-	keys       map[string]struct{}
+	// keyHashes stores the sorted upper-bounds of every segment in the hash-ring.
+	keyHashes []uint32 // Sorted
+	// hashMap maps segment upper-bounds in keyHashes to the owner-key-names
+	hashMap map[uint32]string
+	// keys tracks which owner-keys are currently present in the hash-ring
+	keys map[string]struct{}
 }
 
 // New constructs a new consistenthash hashring, with segsPerKey segments per added key.
@@ -105,17 +109,17 @@ func (m *Map) findSegmentOwner(hash uint32) (int, uint32, string) {
 	return idx, m.keyHashes[idx], m.hashMap[m.keyHashes[idx]]
 }
 
-func (m *Map) prevSegmentOwner(idx int, lastSegHash, hash uint32) (int, uint32, string) {
+func (m *Map) nextSegmentOwner(idx int) (int, uint32, string) {
 	if len(m.keys) == 1 {
 		panic("attempt to find alternate owner for single-key map")
 	}
-	if idx == 0 {
-		// if idx is 0, then wrap around
-		return m.prevSegmentOwner(len(m.keyHashes)-1, lastSegHash, hash)
+	if idx == len(m.keyHashes)-1 {
+		// if idx is len(m.keys)-1, then wrap around
+		return 0, m.keyHashes[0], m.hashMap[m.keyHashes[0]]
 	}
 
-	// we're moving backwards within a ring; decrement the index
-	idx--
+	// we're moving forward within a ring; increment the index
+	idx++
 
 	return idx, m.keyHashes[idx], m.hashMap[m.keyHashes[idx]]
 }
@@ -155,10 +159,10 @@ func (m *Map) GetReplicated(key string, keyReplicas int) []string {
 
 	for i := 0; i < keyReplicas && len(out) < len(m.keys); i++ {
 		h := m.idxedKeyReplica(key, i)
-		segIdx, segBound, owner := m.findSegmentOwner(h)
+		segIdx, _, owner := m.findSegmentOwner(h)
 		for _, present := segOwners[owner]; present; _, present = segOwners[owner] {
 			// this may overflow, which is fine.
-			segIdx, segBound, owner = m.prevSegmentOwner(segIdx, segBound, h)
+			segIdx, _, owner = m.nextSegmentOwner(segIdx)
 		}
 		segOwners[owner] = struct{}{}
 		out = append(out, owner)
