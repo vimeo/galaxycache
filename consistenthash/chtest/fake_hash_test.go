@@ -2,7 +2,10 @@
 
 package chtest
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestMapArgs(t *testing.T) {
 	// owners
@@ -15,7 +18,15 @@ func TestMapArgs(t *testing.T) {
 	soP2 := SingleOwnerKey(peer2)
 	soP3 := SingleOwnerKey(peer3)
 
-	ma := NewMapArgs(Args{Owners: []string{peer1, peer2, peer3}})
+	ma := NewMapArgs(Args{
+		Owners: []string{peer1, peer2, peer3},
+		RegisterKeys: map[string][]string{
+			"allpeers":     nil,
+			"p1explicit":   {peer1},
+			"p2explicit":   {peer2},
+			"p1p2explicit": {peer1, peer2},
+		},
+	})
 	if expSegs := 2; ma.NSegsPerKey != expSegs {
 		t.Errorf("unexpected number of key segments: %d; expected %d", ma.NSegsPerKey, expSegs)
 	}
@@ -31,6 +42,26 @@ func TestMapArgs(t *testing.T) {
 		}
 		if soP3Owner := fullMap.Get(soP3); soP3Owner != peer3 {
 			t.Errorf("unexpected peer owner for key %q; got %q; want %q", soP3, soP3Owner, peer3)
+		}
+		if explAllOwner := fullMap.Get("allpeers"); explAllOwner != peer1 {
+			t.Errorf("unexpected peer owner for key %q; got %q; want %q", "allpeers", explAllOwner, peer1)
+		}
+		// fetch with the same number of replicas as peers
+		if explAllOwner := fullMap.GetReplicated("allpeers", 3); !slices.Equal(explAllOwner, []string{peer1, peer2, peer3}) {
+			t.Errorf("unexpected peer owners for key %q; got %v; want %v", "allpeers", explAllOwner, []string{peer1, peer2, peer3})
+		}
+		// fetch with more replicas than peers
+		if explAllOwner := fullMap.GetReplicated("allpeers", 8); !slices.Equal(explAllOwner, []string{peer1, peer2, peer3}) {
+			t.Errorf("unexpected peer owners for key %q; got %v; want %v", "allpeers", explAllOwner, []string{peer1, peer2, peer3})
+		}
+		if explP1Owner := fullMap.Get("p1explicit"); explP1Owner != peer1 {
+			t.Errorf("unexpected peer owner for key %q; got %q; want %q", "p1explicit", explP1Owner, peer1)
+		}
+		if explP2Owner := fullMap.Get("p2explicit"); explP2Owner != peer2 {
+			t.Errorf("unexpected peer owner for key %q; got %q; want %q", "p2explicit", explP2Owner, peer2)
+		}
+		if explP1P2Owner := fullMap.GetReplicated("p1p2explicit", 2); !slices.Equal(explP1P2Owner, []string{peer1, peer2}) {
+			t.Errorf("unexpected peer owners for key %q; got %v; want %v", "p1p2explicit", explP1P2Owner, []string{peer1, peer2})
 		}
 	}
 	{
