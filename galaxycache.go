@@ -64,6 +64,7 @@ func (f GetterFunc) Get(ctx context.Context, key string, dest Codec) error {
 type universeOpts struct {
 	hashOpts *HashOptions
 	recorder stats.Recorder
+	clock    clocks.Clock
 }
 
 // UniverseOpt is a functional Universe option.
@@ -84,12 +85,20 @@ func WithRecorder(recorder stats.Recorder) UniverseOpt {
 	}
 }
 
+// WithUniversalClock specifices a clock to use at the universe level (and for galaxies to inherit by default)
+func WithUniversalClock(clock clocks.Clock) UniverseOpt {
+	return func(u *universeOpts) {
+		u.clock = clock
+	}
+}
+
 // Universe defines the primary container for all galaxycache operations.
 // It contains the galaxies and PeerPicker
 type Universe struct {
 	mu         sync.RWMutex
 	galaxies   map[string]*Galaxy // galaxies are indexed by their name
 	peerPicker *PeerPicker
+	clock      clocks.Clock
 	recorder   stats.Recorder
 }
 
@@ -97,15 +106,18 @@ type Universe struct {
 // FetchProtocol (to specify fetching via GRPC or HTTP) and its own URL along
 // with options.
 func NewUniverse(protocol FetchProtocol, selfID string, opts ...UniverseOpt) *Universe {
-	options := &universeOpts{}
+	options := &universeOpts{
+		clock: clocks.DefaultClock(),
+	}
 	for _, opt := range opts {
 		opt(options)
 	}
 
 	c := &Universe{
 		galaxies:   make(map[string]*Galaxy),
-		peerPicker: newPeerPicker(protocol, selfID, options.hashOpts),
+		peerPicker: newPeerPicker(protocol, options.clock, selfID, options.hashOpts),
 		recorder:   options.recorder,
+		clock:      options.clock,
 	}
 	// Insert the Self-ID into the hash-ring
 	c.peerPicker.set(Peer{ID: selfID, URI: ""})
@@ -149,7 +161,7 @@ func (universe *Universe) NewGalaxy(name string, cacheBytes int64, getter Backen
 		promoter:          &promoter.DefaultPromoter{},
 		hcRatio:           8, // default hotcache size is 1/8th of cacheBytes
 		maxCandidates:     1024,
-		clock:             clocks.DefaultClock(),
+		clock:             universe.clock,
 		resetIdleStatsAge: time.Minute,
 	}
 	for _, opt := range opts {
