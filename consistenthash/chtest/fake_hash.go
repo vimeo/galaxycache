@@ -1,28 +1,26 @@
 //go:build go1.23
 
 // Package chtest provides some helper hash-functions for use with the parent
-// consistenhash package (and galaxycache) to provide particular owners for
+// consistenthash package (and galaxycache) to provide particular owners for
 // specific keys.
 //
-// This package cannot be imported outside of tests. (If [testing.Testing] returns false, it will panic in init())
+// This package cannot be imported outside of tests.
+// If [testing.Testing] returns false, it will panic in init() unless compiled
+// with the `testing_binary_chtest_can_panic_at_any_time` build tag (intended
+// to be used for tests that require running a separate binary
+// (e.g. integration/interop tests)).
 package chtest
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
-	"testing"
 
 	"github.com/vimeo/galaxycache/cachekey"
 	"github.com/vimeo/galaxycache/consistenthash"
 )
-
-func init() {
-	if !testing.Testing() {
-		panic("attempt to use galaxycache's consistenthash/chtest package outside a test")
-	}
-}
 
 const singleOwnerPrefix = "Single Key Prefix\000\000"
 const fallthroughOwnerKeyPrefix = "Fallthrough Key Prefix\000\000"
@@ -50,6 +48,9 @@ type hashRange struct {
 // Args is an argument struct to NewMapArgs
 type Args struct {
 	Owners []string
+	// Map from a key to a set of replicas to the set of owners to map this key into for its sequential replicas (GetReplicated)
+	// if the value is nil, then one hash for each owner is picked sequentially
+	RegisterKeys map[string][]string
 }
 
 // MapArgs provides the values that should be passed through to
@@ -125,6 +126,22 @@ func NewMapArgs(args Args) MapArgs {
 		lastUpper = rightUpperBound
 	}
 
+	preRegisteredKeys := map[string]uint32{}
+	for k, kHosts := range args.RegisterKeys {
+		if kHosts == nil {
+			kHosts = owners
+		}
+		for i, kHost := range kHosts {
+			// if i == 0, we use the key verbatim
+			// This _must_ be kept in sync with Map.idxedKeyReplica
+			regKey := k
+			if i > 0 {
+				regKey = string(binary.AppendUvarint([]byte(k+"\xaa\xaa"), uint64(i)))
+			}
+			preRegisteredKeys[regKey] = ownersMap[kHost][0].hi
+		}
+	}
+
 	h := func(buf []byte) uint32 {
 		bufStr := string(buf)
 		if hVal, ok := ownerKeyHashes[bufStr]; ok {
@@ -150,9 +167,9 @@ func NewMapArgs(args Args) MapArgs {
 			}
 			return fallthroughs[lrPair{origOwner, ftOwner}].hi
 		}
-		// TODO: Add a key pre-registration mechanism so keys that
-		// aren't entirely controlled, but can be predicted can be
-		// "directed" appropriately.
+		if hv, ok := preRegisteredKeys[bufStr]; ok {
+			return hv
+		}
 		panic(fmt.Errorf("unknown key: %q", string(buf)))
 	}
 
