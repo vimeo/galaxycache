@@ -69,6 +69,7 @@ type recordingNullFetchFetchArgs struct {
 	peerID string
 	galaxy string
 	key    string
+	method string
 }
 
 type recordingNullFetchProtocol struct {
@@ -120,6 +121,17 @@ func (r *recordingNullFetcher) Fetch(context context.Context, galaxy string, key
 		peerID: r.url,
 		galaxy: galaxy,
 		key:    key,
+		method: "fetch",
+	})
+	return nil, fmt.Errorf("noop for galaxy %s; key %s", galaxy, key)
+}
+
+func (r *recordingNullFetcher) Peek(context context.Context, galaxy string, key string) ([]byte, error) {
+	r.p.appendArgs(recordingNullFetchFetchArgs{
+		peerID: r.url,
+		galaxy: galaxy,
+		key:    key,
+		method: "peek",
 	})
 	return nil, fmt.Errorf("noop for galaxy %s; key %s", galaxy, key)
 }
@@ -197,7 +209,7 @@ func TestUpdateCB(t *testing.T) {
 		t.Log(getErr)
 		f := fp.clone()
 
-		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit"}}; !slices.Equal(f.fetchCalls, expCalls) {
+		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit", method: "fetch"}}; !slices.Equal(f.fetchCalls, expCalls) {
 			t.Errorf("unexpected fetchCalls: got %v; want %v", f.fetchCalls, expCalls)
 		}
 		if expURLs := map[string]struct{}{"10.20.30.42:20124": {}}; !maps.Equal(f.knownPeers, expURLs) {
@@ -211,7 +223,7 @@ func TestUpdateCB(t *testing.T) {
 	{
 		f := fp.clone()
 
-		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit"}}; !slices.Equal(f.fetchCalls, expCalls) {
+		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit", method: "fetch"}}; !slices.Equal(f.fetchCalls, expCalls) {
 			t.Errorf("unexpected fetchCalls: got %v; want %v", f.fetchCalls, expCalls)
 		}
 		if expURLs := map[string]struct{}{}; !maps.Equal(f.knownPeers, expURLs) {
@@ -225,7 +237,7 @@ func TestUpdateCB(t *testing.T) {
 	{
 		f := fp.clone()
 
-		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit"}}; !slices.Equal(f.fetchCalls, expCalls) {
+		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit", method: "fetch"}}; !slices.Equal(f.fetchCalls, expCalls) {
 			t.Errorf("unexpected fetchCalls: got %v; want %v", f.fetchCalls, expCalls)
 		}
 		if expURLs := map[string]struct{}{}; !maps.Equal(f.knownPeers, expURLs) {
@@ -238,7 +250,7 @@ func TestUpdateCB(t *testing.T) {
 	{
 		f := fp.clone()
 
-		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit"}}; !slices.Equal(f.fetchCalls, expCalls) {
+		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit", method: "fetch"}}; !slices.Equal(f.fetchCalls, expCalls) {
 			t.Errorf("unexpected fetchCalls: got %v; want %v", f.fetchCalls, expCalls)
 		}
 		if expURLs := map[string]struct{}{"10.20.30.42:20124": {}}; !maps.Equal(f.knownPeers, expURLs) {
@@ -252,7 +264,7 @@ func TestUpdateCB(t *testing.T) {
 	{
 		f := fp.clone()
 
-		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit"}}; !slices.Equal(f.fetchCalls, expCalls) {
+		if expCalls := []recordingNullFetchFetchArgs{{peerID: "10.20.30.42:20124", galaxy: g.Name(), key: "fooblebit", method: "fetch"}}; !slices.Equal(f.fetchCalls, expCalls) {
 			t.Errorf("unexpected fetchCalls: got %v; want %v", f.fetchCalls, expCalls)
 		}
 		if expURLs := map[string]struct{}{}; !maps.Equal(f.knownPeers, expURLs) {
