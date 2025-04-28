@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	gc "github.com/vimeo/galaxycache"
 
@@ -108,7 +109,11 @@ func runTestPeerGRPCServer(ctx context.Context, t testing.TB, addresses []string
 		dest.UnmarshalBinary([]byte(":" + key))
 		return nil
 	})
-	universe.NewGalaxy("peerFetchTest", 1<<20, getter)
+	// Make sure we make peek calls
+	universe.NewGalaxy("peerFetchTest", 1<<20, getter, gc.WithPreviousPeerPeeking(gc.PeekPeerCfg{
+		PeekTimeout: time.Millisecond * 10,
+		WarmTime:    time.Hour,
+	}))
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
