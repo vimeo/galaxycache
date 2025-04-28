@@ -478,6 +478,28 @@ func (g *Galaxy) recordRequest(ctx context.Context, h hitLevel, localAuthoritati
 	}
 }
 
+// NotFoundErr is an error indicating that the key was not found. If an
+// error unwraps to it (with [errors.As]), Galaxycache may skip a local lookup
+// and return an error implementing this interface (possibly forwarding an
+// error message from the remote peer (fetch protocol permitting)
+// [TrivialNotFoundErr] is available for wrapping to satisfy this requirement.
+type NotFoundErr interface {
+	error
+	IsNotFound()
+}
+
+// TrivialNotFoundErr is an error-type that can be wrapped to mark the error as
+// a not-found. (and unwrap to NotFoundErr)
+type TrivialNotFoundErr struct{}
+
+// IsNotFound implements NotFoundErr
+func (TrivialNotFoundErr) IsNotFound() {}
+
+// Error implements error
+func (TrivialNotFoundErr) Error() string {
+	return "not found"
+}
+
 // Get as defined here is the primary "get" called on a galaxy to
 // find the value for the given key, using the following logic:
 // - First, try the local cache; if its a cache hit, we're done
