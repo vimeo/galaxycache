@@ -127,8 +127,8 @@ func NewUniverse(protocol FetchProtocol, selfID string, opts ...UniverseOpt) *Un
 }
 
 // NewUniverseWithOpts is a deprecated constructor for the Universe object that
-// defines a non-default hash function and number of replicas.  Please use
-// `NewUniverse` with the `WithHashOpts` option instead.
+// defines a non-default hash function and number of replicas.
+// Deprecated: Please use `NewUniverse` with the `WithHashOpts` option instead.
 func NewUniverseWithOpts(protocol FetchProtocol, selfID string, options *HashOptions) *Universe {
 	return NewUniverse(protocol, selfID, WithHashOpts(options))
 }
