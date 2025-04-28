@@ -1,7 +1,7 @@
 //go:build go1.23
 
 // Package chtest provides some helper hash-functions for use with the parent
-// consistenhash package (and galaxycache) to provide particular owners for
+// consistenthash package (and galaxycache) to provide particular owners for
 // specific keys.
 //
 // This package cannot be imported outside of tests.
