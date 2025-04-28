@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -512,6 +513,21 @@ func (TrivialNotFoundErr) Error() string {
 	return "not found"
 }
 
+// keyPeekNotFound implements NotFoundErr, and is used for peek requests
+// (GetWithOptions where both backend and peer fetches are disabled)
+type keyPeekNotFound struct {
+	galaxy string
+	key    string
+}
+
+// Error implements the error interface
+func (n *keyPeekNotFound) Error() string {
+	return fmt.Sprintf("key %q not found in galaxy %q", n.key, n.galaxy)
+}
+
+// indicate that this error is a NotFoundErr
+func (n *keyPeekNotFound) IsNotFound() {}
+
 // Get as defined here is the primary "get" called on a galaxy to
 // find the value for the given key, using the following logic:
 // - First, try the local cache; if its a cache hit, we're done
@@ -521,7 +537,55 @@ func (TrivialNotFoundErr) Error() string {
 // to Fetch from it; otherwise, if the calling instance is the key's
 // canonical owner, call the BackendGetter to retrieve the value
 // (which will now be cached locally)
+// This is a wrapper around GetWithOptions.
 func (g *Galaxy) Get(ctx context.Context, key string, dest Codec) error {
+	_, getErr := g.GetWithOptions(ctx, GetOptions{}, key, dest)
+	return getErr
+}
+
+// FetchMode is a trimode enum indicating how to handle fetching
+type FetchMode uint8
+
+const (
+	// Normal fetch behavior: check local cache, then peer, then do a local backend fetch
+	FetchModeRegular FetchMode = iota
+	// Like Regular, but only issue peek calls to peers, so we don't incur backend gets there.
+	// (the peek call may have a very short deadline, if issued (controlled at the galaxy level))
+	FetchModeNoPeerBackend
+	// Only check whether this is in-cache
+	FetchModePeek
+)
+
+func (f FetchMode) allowPeerFetch() bool {
+	switch f {
+	case FetchModeRegular:
+		return true
+	case FetchModeNoPeerBackend, FetchModePeek:
+		return false
+	default:
+		panic("unknown fetch mode: " + strconv.Itoa(int(f)))
+	}
+}
+
+type GetOptions struct {
+	// FetchMode
+	FetchMode FetchMode
+}
+
+type GetInfo struct {
+	// TODO: include information about hit-level, backend fetches and any TTL (when implemented).
+}
+
+// GetWithOptions as defined here is the primary "get" called on a galaxy to
+// find the value for the given key, using the following logic:
+// - First, try the local cache; if its a cache hit, we're done
+// - On a cache miss, search for which peer is the owner of the
+// key based on the consistent hash (if SkipPeerFetch is false)
+// - If a different peer is the owner, use the corresponding fetcher
+// to Fetch from it; otherwise, if the calling instance is the key's
+// canonical owner, call the BackendGetter to retrieve the value
+// (which will now be cached locally) -- if SkipBackendFetch is false.
+func (g *Galaxy) GetWithOptions(ctx context.Context, opts GetOptions, key string, dest Codec) (GetInfo, error) {
 	ctx, tagErr := tag.New(ctx, tag.Upsert(GalaxyKey, g.name))
 	if tagErr != nil {
 		panic(fmt.Errorf("error tagging context: %s", tagErr))
@@ -538,7 +602,7 @@ func (g *Galaxy) Get(ctx context.Context, key string, dest Codec) error {
 	g.recordStats(ctx, nil, MGets.M(1))
 	if dest == nil {
 		span.SetStatus(trace.Status{Code: trace.StatusCodeInvalidArgument, Message: "no Codec was provided"})
-		return errors.New("galaxycache: no Codec was provided")
+		return GetInfo{}, errors.New("galaxycache: no Codec was provided")
 	}
 	value, hlvl := g.lookupCache(key)
 	g.recordStats(ctx, nil, MKeyLength.M(int64(len(key))))
@@ -548,10 +612,19 @@ func (g *Galaxy) Get(ctx context.Context, key string, dest Codec) error {
 		value.stats.touch(g.resetIdleStatsAge, g.now())
 		g.recordRequest(ctx, hlvl, false)
 		g.recordStats(ctx, nil, MValueLength.M(int64(len(value.data))))
-		return dest.UnmarshalBinary(value.data)
+		return GetInfo{}, dest.UnmarshalBinary(value.data)
 	}
 
 	span.Annotatef([]trace.Attribute{trace.BoolAttribute("cache_hit", false)}, "Cache miss")
+
+	if opts.FetchMode == FetchModePeek {
+		// This is a peek terminate here, before we do anything expensive.
+		return GetInfo{}, &keyPeekNotFound{
+			galaxy: g.name,
+			key:    key,
+		}
+	}
+
 	// Optimization to avoid double unmarshalling or copying: keep
 	// track of whether the dest was already populated. One caller
 	// (if local) will set this; the losers will not. The common
@@ -561,14 +634,14 @@ func (g *Galaxy) Get(ctx context.Context, key string, dest Codec) error {
 	if err != nil {
 		span.SetStatus(trace.Status{Code: trace.StatusCodeUnknown, Message: "Failed to load key: " + err.Error()})
 		g.recordStats(ctx, nil, MLoadErrors.M(1))
-		return err
+		return GetInfo{}, err
 	}
 	value.stats.touch(g.resetIdleStatsAge, g.now())
 	g.recordStats(ctx, nil, MValueLength.M(int64(len(value.data))))
 	if destPopulated {
-		return nil
+		return GetInfo{}, nil
 	}
-	return dest.UnmarshalBinary(value.data)
+	return GetInfo{}, dest.UnmarshalBinary(value.data)
 }
 
 type valWithLevel struct {
