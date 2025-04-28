@@ -36,6 +36,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	GalaxyCache_GetFromPeer_FullMethodName = "/galaxycachepb.GalaxyCache/GetFromPeer"
+	GalaxyCache_PeekPeer_FullMethodName    = "/galaxycachepb.GalaxyCache/PeekPeer"
 )
 
 // GalaxyCacheClient is the client API for GalaxyCache service.
@@ -43,6 +44,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type GalaxyCacheClient interface {
 	GetFromPeer(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	PeekPeer(ctx context.Context, in *PeekRequest, opts ...grpc.CallOption) (*PeekResponse, error)
 }
 
 type galaxyCacheClient struct {
@@ -63,11 +65,22 @@ func (c *galaxyCacheClient) GetFromPeer(ctx context.Context, in *GetRequest, opt
 	return out, nil
 }
 
+func (c *galaxyCacheClient) PeekPeer(ctx context.Context, in *PeekRequest, opts ...grpc.CallOption) (*PeekResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PeekResponse)
+	err := c.cc.Invoke(ctx, GalaxyCache_PeekPeer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GalaxyCacheServer is the server API for GalaxyCache service.
 // All implementations must embed UnimplementedGalaxyCacheServer
 // for forward compatibility.
 type GalaxyCacheServer interface {
 	GetFromPeer(context.Context, *GetRequest) (*GetResponse, error)
+	PeekPeer(context.Context, *PeekRequest) (*PeekResponse, error)
 	mustEmbedUnimplementedGalaxyCacheServer()
 }
 
@@ -80,6 +93,9 @@ type UnimplementedGalaxyCacheServer struct{}
 
 func (UnimplementedGalaxyCacheServer) GetFromPeer(context.Context, *GetRequest) (*GetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFromPeer not implemented")
+}
+func (UnimplementedGalaxyCacheServer) PeekPeer(context.Context, *PeekRequest) (*PeekResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PeekPeer not implemented")
 }
 func (UnimplementedGalaxyCacheServer) mustEmbedUnimplementedGalaxyCacheServer() {}
 func (UnimplementedGalaxyCacheServer) testEmbeddedByValue()                     {}
@@ -120,6 +136,24 @@ func _GalaxyCache_GetFromPeer_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GalaxyCache_PeekPeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PeekRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GalaxyCacheServer).PeekPeer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GalaxyCache_PeekPeer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GalaxyCacheServer).PeekPeer(ctx, req.(*PeekRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // GalaxyCache_ServiceDesc is the grpc.ServiceDesc for GalaxyCache service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -130,6 +164,10 @@ var GalaxyCache_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFromPeer",
 			Handler:    _GalaxyCache_GetFromPeer_Handler,
+		},
+		{
+			MethodName: "PeekPeer",
+			Handler:    _GalaxyCache_PeekPeer_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

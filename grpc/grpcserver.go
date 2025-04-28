@@ -18,6 +18,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 
 	gc "github.com/vimeo/galaxycache"
 	pb "github.com/vimeo/galaxycache/galaxycachepb"
@@ -54,10 +55,36 @@ func (gp *serviceImpl) GetFromPeer(ctx context.Context, req *pb.GetRequest) (*pb
 	galaxy.Stats.ServerRequests.Add(1) // keep track of the num of req
 
 	var value unsafeByteCodec
-	err := galaxy.Get(ctx, string(req.GetKey()), &value)
+	_, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModeNoPeerBackend}, string(req.GetKey()), &value)
 	if err != nil {
+		if nfErr := gc.NotFoundErr(nil); errors.As(err, &nfErr) {
+			return nil, status.Errorf(codes.NotFound, "not found: [%s]: %v", req, err)
+		}
 		return nil, status.Errorf(status.Code(err), "Failed to retrieve [%s]: %v", req, err)
 	}
 
 	return pb.GetResponse_builder{Value: value}.Build(), nil
+}
+
+// GetFromPeer implements the generated GalaxyCacheServer
+// interface, making an internal Get() after receiving a
+// remote call from a peer
+func (gp *serviceImpl) PeekPeer(ctx context.Context, req *pb.PeekRequest) (*pb.PeekResponse, error) {
+	galaxy := gp.universe.GetGalaxy(req.GetGalaxy())
+	if galaxy == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "Unable to find galaxy [%s]", req.GetGalaxy())
+	}
+
+	galaxy.Stats.ServerRequests.Add(1) // keep track of the num of req
+
+	var value unsafeByteCodec
+	_, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModePeek}, string(req.GetKey()), &value)
+	if err != nil {
+		if nfErr := gc.NotFoundErr(nil); errors.As(err, &nfErr) {
+			return nil, status.Errorf(codes.NotFound, "not found: [%s]: %v", req, err)
+		}
+		return nil, status.Errorf(status.Code(err), "Failed to retrieve [%s]: %v", req, err) // not clear what this would be
+	}
+
+	return pb.PeekResponse_builder{Value: value}.Build(), nil
 }
