@@ -1,5 +1,6 @@
 /*
 Copyright 2012 Google Inc.
+Copyright 2018-2025 Vimeo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,15 +15,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-syntax = "proto3";
+edition = "2023";
 
 package galaxycachepb;
 
 option go_package = "github.com/vimeo/galaxycache/galaxycachepb";
 
+import "google/protobuf/go_features.proto";
+option features.(pb.go).api_level = API_OPAQUE;
+option features.field_presence = IMPLICIT;
+
 message GetRequest {
   string galaxy = 1;
-  bytes key = 2; // not required/guaranteed to be UTF-8
+  bytes key = 2;  // not required/guaranteed to be UTF-8
 }
 
 message GetResponse {
