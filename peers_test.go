@@ -240,6 +240,7 @@ func TestPeersIncremental(t *testing.T) {
 			// instantiate test fetchers with the test protocol
 			testproto := TestProtocol{
 				TestFetchers: make(map[string]*TestFetcher),
+				hostInVal:    true, // not used in this test, but, it does make sense spiritually
 			}
 
 			fc := fake.NewClock(time.Now())

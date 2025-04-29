@@ -127,8 +127,8 @@ func NewUniverse(protocol FetchProtocol, selfID string, opts ...UniverseOpt) *Un
 }
 
 // NewUniverseWithOpts is a deprecated constructor for the Universe object that
-// defines a non-default hash function and number of replicas.  Please use
-// `NewUniverse` with the `WithHashOpts` option instead.
+// defines a non-default hash function and number of replicas.
+// Deprecated: Please use `NewUniverse` with the `WithHashOpts` option instead.
 func NewUniverseWithOpts(protocol FetchProtocol, selfID string, options *HashOptions) *Universe {
 	return NewUniverse(protocol, selfID, WithHashOpts(options))
 }
@@ -337,6 +337,20 @@ func (g *Galaxy) now() time.Duration {
 	return g.clock.Now().Sub(g.baseTime)
 }
 
+// PeekPeerCfg provides tuning parameters Peeking behavior, when configured.
+type PeekPeerCfg struct {
+	// PeekTimeout is the timeout to use when making Peek requests for this Galaxy.
+	// this may be in the 2-10ms range for local networks, as the remote
+	// end should always service this request from memory.
+	PeekTimeout time.Duration
+	// WarmTime indicates how long after this galaxy initializes to stop
+	// making Peek requests for a range after it took over that range.
+	// This should be on par with the cache-warming time for initial startup.
+	// Ranges transfered to this instance from peers that scale-down will
+	// send Peek requests to those dying peers until it starts erroring.
+	WarmTime time.Duration
+}
+
 // GalaxyOption is an interface for implementing functional galaxy options
 type GalaxyOption interface {
 	apply(*galaxyOpts)
@@ -350,6 +364,8 @@ type galaxyOpts struct {
 	maxCandidates     int
 	clock             clocks.Clock
 	resetIdleStatsAge time.Duration
+
+	peekPeer *PeekPeerCfg
 }
 
 type funcGalaxyOption func(*galaxyOpts)
@@ -404,6 +420,13 @@ func WithIdleStatsAgeResetWindow(age time.Duration) GalaxyOption {
 	})
 }
 
+// WithPreviousPeerPeeking enables peer-peeking and sets the config
+func WithPreviousPeerPeeking(cfg PeekPeerCfg) GalaxyOption {
+	return newFuncGalaxyOption(func(g *galaxyOpts) {
+		g.peekPeer = &cfg
+	})
+}
+
 // flightGroup is defined as an interface which flightgroup.Group
 // satisfies.  We define this so that we may test with an alternate
 // implementation.
@@ -423,11 +446,15 @@ type GalaxyStats struct {
 	PeerLoadErrors    AtomicInt // errors on getFromPeer
 	BackendLoads      AtomicInt // load from backend locally
 	BackendLoadErrors AtomicInt // total bad local loads
+	PeerPeekHits      AtomicInt // peer Peek hits
+	PeerPeeks         AtomicInt // peer Peek requests
 
 	CoalescedMaincacheHits AtomicInt // maincache hit in singleflight
 	CoalescedHotcacheHits  AtomicInt // hotcache hit in singleflight
 	CoalescedPeerLoads     AtomicInt // peer load in singleflight
 	CoalescedBackendLoads  AtomicInt // backend load in singleflight
+	CoalescedPeerPeekHits  AtomicInt // peek hit in singleflight
+	CoalescedPeerPeeks     AtomicInt // peek request in singleflight
 
 	ServerRequests AtomicInt // gets that came over the network from peers
 }
@@ -443,6 +470,7 @@ type hitLevel int
 const (
 	hitHotcache hitLevel = iota + 1
 	hitMaincache
+	hitPeek
 	hitPeer
 	hitBackend
 	miss // for checking cache hit/miss in lookupCache
@@ -454,6 +482,8 @@ func (h hitLevel) String() string {
 		return "hotcache"
 	case hitMaincache:
 		return "maincache"
+	case hitPeek:
+		return "peek"
 	case hitPeer:
 		return "peer"
 	case hitBackend:
@@ -479,6 +509,9 @@ func (g *Galaxy) recordRequest(ctx context.Context, h hitLevel, localAuthoritati
 	case hitHotcache:
 		g.Stats.HotcacheHits.Add(1)
 		g.recordStats(ctx, []tag.Mutator{tag.Upsert(CacheLevelKey, h.String())}, MCacheHits.M(1))
+	case hitPeek:
+		g.Stats.PeerPeekHits.Add(1)
+		g.recordStats(ctx, []tag.Mutator{tag.Upsert(CacheLevelKey, h.String())}, MCacheHits.M(1), MPeeks.M(1))
 	case hitPeer:
 		g.Stats.PeerLoads.Add(1)
 		g.recordStats(ctx, nil, MPeerLoads.M(1))
@@ -630,7 +663,10 @@ func (g *Galaxy) GetWithOptions(ctx context.Context, opts GetOptions, key string
 	// (if local) will set this; the losers will not. The common
 	// case will likely be one caller.
 	destPopulated := false
-	value, destPopulated, err := g.load(ctx, key, dest)
+	lo := loadOpts{
+		fetchMode: opts.FetchMode,
+	}
+	value, destPopulated, err := g.load(ctx, lo, key, dest)
 	if err != nil {
 		span.SetStatus(trace.Status{Code: trace.StatusCodeUnknown, Message: "Failed to load key: " + err.Error()})
 		g.recordStats(ctx, nil, MLoadErrors.M(1))
@@ -652,8 +688,12 @@ type valWithLevel struct {
 	localErr           error
 }
 
+type loadOpts struct {
+	fetchMode FetchMode
+}
+
 // load loads key either by invoking the getter locally or by sending it to another machine.
-func (g *Galaxy) load(ctx context.Context, key string, dest Codec) (value valWithStat, destPopulated bool, err error) {
+func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec) (value valWithStat, destPopulated bool, err error) {
 	g.Stats.Loads.Add(1)
 	g.recordStats(ctx, nil, MLoads.M(1))
 
@@ -694,13 +734,13 @@ func (g *Galaxy) load(ctx context.Context, key string, dest Codec) (value valWit
 
 		authoritative := true
 		var peerErr error
-		if peer, ok := g.peerPicker.pickPeer(key); ok {
+		if peer, ok := g.peerPicker.pickPeer(key); opts.fetchMode.allowPeerFetch() && ok {
 			value, peerErr = g.getFromPeer(ctx, peer, key)
 			authoritative = false
 			if peerErr == nil {
 				g.Stats.CoalescedPeerLoads.Add(1)
 				g.recordStats(ctx, nil, MCoalescedPeerLoads.M(1))
-				return &valWithLevel{value, hitPeer, false, nil, nil}, nil
+				return &valWithLevel{val: value, level: hitPeer, localAuthoritative: false, peerErr: nil, localErr: nil}, nil
 			}
 
 			g.Stats.PeerLoadErrors.Add(1)
@@ -709,6 +749,24 @@ func (g *Galaxy) load(ctx context.Context, key string, dest Codec) (value valWit
 			// log of the past few for /galaxycache?  It's
 			// probably boring (normal task movement), so not
 			// worth logging I imagine.
+
+			// If this was a NotFoundErr return it without trying to fetch locally
+			if nfErr := NotFoundErr(nil); errors.As(peerErr, &nfErr) {
+				return nil, peerErr
+			}
+		} else if !ok && g.opts.peekPeer != nil {
+			value, peerErr = g.peekPeer(ctx, key)
+			authoritative = false
+			if peerErr == nil {
+				g.Stats.CoalescedPeerPeeks.Add(1)
+				g.recordStats(ctx, nil, MCoalescedPeeks.M(1))
+				return &valWithLevel{val: value, level: hitPeek, localAuthoritative: true, peerErr: nil, localErr: nil}, nil
+			}
+			if nfErr := NotFoundErr(nil); !errors.As(peerErr, &nfErr) {
+				// Not a not-found, mark it as a peek-error.
+				g.recordStats(ctx, nil, MPeerLoadErrors.M(1))
+			}
+
 		}
 		data, err := g.getLocally(ctx, key, dest)
 		if err != nil {
@@ -743,6 +801,45 @@ func (g *Galaxy) getLocally(ctx context.Context, key string, dest Codec) ([]byte
 		return nil, err
 	}
 	return dest.MarshalBinary()
+}
+
+func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, error) {
+	peer, ok := g.parent.peerPicker.pickPeekPeer(g.opts.peekPeer.WarmTime, key)
+	if !ok {
+		// just pretend it's a cache-miss (it's easier that way)
+		return valWithStat{}, TrivialNotFoundErr{}
+	}
+
+	// This is a quick inmemory lookup; we want to set an aggressive
+	// deadline so we don't waste any work, but also don't delay for too
+	// long if something's awry on the peer.
+	ctx, cancel := g.clock.ContextWithTimeout(ctx, g.opts.peekPeer.PeekTimeout)
+	defer cancel()
+
+	span := trace.FromContext(ctx)
+
+	span.Annotate(nil, "sending peek")
+	peekVal, peekErr := peer.Peek(ctx, g.name, key)
+	g.Stats.CoalescedPeerPeeks.Add(1)
+	g.recordStats(ctx, nil, MCoalescedPeeks.M(1))
+	if peekErr != nil {
+		if nfErr := NotFoundErr(nil); errors.As(peekErr, &nfErr) {
+			span.Annotatef(nil, "peek miss: %s", peekErr)
+		} else {
+			span.Annotatef(nil, "peek failed: %s", peekErr)
+		}
+		return valWithStat{}, fmt.Errorf("peek failed: %w", peekErr)
+	}
+	g.Stats.CoalescedPeerPeekHits.Add(1)
+	span.Annotate(nil, "peek hit")
+
+	// We only peek for keys that this instance owns, so they'll be unconditionally
+	// inserted into the main cache.
+
+	value := g.newValWithStat(peekVal, nil)
+	g.populateCache(ctx, key, value, &g.mainCache)
+
+	return value, nil
 }
 
 func (g *Galaxy) getFromPeer(ctx context.Context, peer RemoteFetcher, key string) (valWithStat, error) {

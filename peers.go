@@ -43,6 +43,8 @@ const defaultReplicas = 50
 // to each other peer address
 type RemoteFetcher interface {
 	Fetch(context context.Context, galaxy string, key string) ([]byte, error)
+	Peek(context context.Context, galaxy string, key string) ([]byte, error)
+
 	// Close closes a client-side connection (may be a nop)
 	Close() error
 }
@@ -489,6 +491,11 @@ type nullFetchFetcher struct{}
 
 func (n *nullFetchFetcher) Fetch(context context.Context, galaxy string, key string) ([]byte, error) {
 	return nil, errors.New("empty fetcher")
+}
+
+func (n *nullFetchFetcher) Peek(context context.Context, galaxy string, key string) ([]byte, error) {
+	// Always return not found
+	return nil, fmt.Errorf("empty fetcher: %w", TrivialNotFoundErr{})
 }
 
 // Close closes a client-side connection (may be a nop)

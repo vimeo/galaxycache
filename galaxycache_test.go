@@ -1,5 +1,6 @@
 /*
 Copyright 2012 Google Inc.
+Copyright 2019-2025 Google Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,6 +36,7 @@ import (
 	"go.opencensus.io/tag"
 
 	"github.com/vimeo/galaxycache/promoter"
+	"github.com/vimeo/go-clocks"
 	"github.com/vimeo/go-clocks/fake"
 )
 
@@ -170,12 +172,49 @@ func TestCacheEviction(t *testing.T) {
 type TestProtocol struct {
 	TestFetchers map[string]*TestFetcher
 	dialFails    map[string]struct{}
+	peekModes    map[string]testPeekMode
+	fetchModes   map[string]testFetchMode
 	mu           sync.Mutex
+
+	// If true, configure TestFetchers to prefix returned values with the hostname/URI as a prefix
+	hostInVal bool
+
+	// optional clock that will be used when sleeping for some time when
+	// peeks are supposed to timeout.
+	clk clocks.Clock
+
+	t testing.TB // for testFetchModeFailTest
 }
+
+type testPeekMode uint8
+
+const (
+	testPeekModeFail testPeekMode = iota
+	testPeekModeMiss
+	testPeekModeHit
+	testPeekModeStallCtx
+)
+
+type testFetchMode uint8
+
+const (
+	testFetchModeHit testFetchMode = iota
+	testFetchModeMiss
+	testFetchModeFail
+	testFetchModeFailTest
+)
+
 type TestFetcher struct {
-	hits int
-	fail bool
-	uri  string
+	hits       int
+	peeks      int
+	fail       bool
+	fetchMode  testFetchMode
+	peekMode   testPeekMode
+	uri        string
+	hostPrefix string // optionally include the fetcher's URI as a prefix in the result
+	clk        clocks.Clock
+
+	t testing.TB
 }
 
 func (fetcher *TestFetcher) Close() error {
@@ -183,18 +222,69 @@ func (fetcher *TestFetcher) Close() error {
 }
 
 func (fetcher *TestFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	// TODO: switch existing tests over to use fetchMode
 	if fetcher.fail {
 		return nil, errors.New("simulated error from peer")
 	}
-	fetcher.hits++
-	return []byte("got:" + key), nil
+	switch fetcher.fetchMode {
+	case testFetchModeFail:
+		return nil, errors.New("simulated error from peer")
+	case testFetchModeFailTest:
+		fetcher.t.Errorf("unexpected fetch on host %q with key %q", fetcher.hostPrefix, key)
+		return nil, errors.New("simulated error from peer")
+	case testFetchModeMiss:
+		return nil, TrivialNotFoundErr{}
+	case testFetchModeHit:
+		fetcher.hits++
+		return []byte(fetcher.hostPrefix + "got:" + key), nil
+	default:
+		panic("unknown mode: %s")
+	}
+}
+
+func (fetcher *TestFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	switch fetcher.peekMode {
+	case testPeekModeFail:
+		fetcher.peeks++
+		return nil, errors.New("simulated error from peer")
+	case testPeekModeHit:
+		fetcher.peeks++
+		return []byte(fetcher.hostPrefix + "peek got: " + key), nil
+	case testPeekModeMiss:
+		fetcher.peeks++
+		return nil, TrivialNotFoundErr{}
+	case testPeekModeStallCtx:
+		// sleep for a day (or until the context expires)
+		// This ctx should come from the fake clock anyway, so we
+		// really only need the signal that we're sleeping to make it
+		// back to the outer test.
+		fetcher.clk.SleepFor(ctx, time.Hour*24)
+		return nil, ctx.Err()
+	default:
+		panic("unknown peek mode " + strconv.Itoa(int(fetcher.peekMode)))
+	}
 }
 
 func (proto *TestProtocol) NewFetcher(url string) (RemoteFetcher, error) {
+	hostPfx := ""
+	if proto.hostInVal {
+		hostPfx = url + ": "
+	}
+	fm := testFetchModeHit
+	if proto.fetchModes != nil {
+		if mode, ok := proto.fetchModes[url]; ok {
+			fm = mode
+		}
+	}
 	newTestFetcher := &TestFetcher{
-		hits: 0,
-		fail: false,
-		uri:  url,
+		hits:       0,
+		fail:       false,
+		fetchMode:  fm,
+		peekMode:   testPeekModeMiss,
+		uri:        url,
+		hostPrefix: hostPfx,
+		clk:        proto.clk,
+		t:          proto.t,
 	}
 	proto.mu.Lock()
 	defer proto.mu.Unlock()
@@ -202,6 +292,9 @@ func (proto *TestProtocol) NewFetcher(url string) (RemoteFetcher, error) {
 		if _, fail := proto.dialFails[url]; fail {
 			return nil, errors.New("failing due to predetermined error")
 		}
+	}
+	if proto.peekModes != nil {
+		newTestFetcher.peekMode = proto.peekModes[url]
 	}
 	proto.TestFetchers[url] = newTestFetcher
 	return newTestFetcher, nil
