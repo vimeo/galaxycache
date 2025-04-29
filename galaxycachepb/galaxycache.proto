@@ -35,6 +35,16 @@ message GetResponse {
   double minute_qps = 2;
 }
 
+message PeekRequest {
+  string galaxy = 1;
+  bytes key = 2;  // not required/guaranteed to be UTF-8
+}
+
+message PeekResponse {
+  bytes value = 1;
+}
+
 service GalaxyCache {
   rpc GetFromPeer(GetRequest) returns (GetResponse) {}
+  rpc PeekPeer(PeekRequest) returns (PeekResponse) {}
 }

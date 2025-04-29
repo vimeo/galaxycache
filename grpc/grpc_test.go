@@ -28,6 +28,7 @@ import (
 	gc "github.com/vimeo/galaxycache"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestGRPCPeerServer(t *testing.T) {
@@ -41,7 +42,7 @@ func TestGRPCPeerServer(t *testing.T) {
 	var peerAddresses []string
 	var peerListeners []net.Listener
 
-	for i := 0; i < nRoutines; i++ {
+	for range nRoutines {
 		newListener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -50,7 +51,7 @@ func TestGRPCPeerServer(t *testing.T) {
 		peerListeners = append(peerListeners, newListener)
 	}
 
-	universe := gc.NewUniverse(NewGRPCFetchProtocol(grpc.WithInsecure()), "shouldBeIgnored")
+	universe := gc.NewUniverse(NewGRPCFetchProtocol(grpc.WithTransportCredentials(insecure.NewCredentials())), "shouldBeIgnored")
 	defer func() {
 		shutdownErr := universe.Shutdown()
 		if shutdownErr != nil {
@@ -89,7 +90,7 @@ func TestGRPCPeerServer(t *testing.T) {
 }
 
 func runTestPeerGRPCServer(ctx context.Context, t testing.TB, addresses []string, listener net.Listener, wg *sync.WaitGroup) {
-	universe := gc.NewUniverse(NewGRPCFetchProtocol(grpc.WithInsecure()), listener.Addr().String())
+	universe := gc.NewUniverse(NewGRPCFetchProtocol(grpc.WithTransportCredentials(insecure.NewCredentials())), listener.Addr().String())
 	grpcServer := grpc.NewServer()
 	RegisterGRPCServer(universe, grpcServer)
 	err := universe.Set(addresses...)

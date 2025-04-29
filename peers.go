@@ -28,10 +28,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/vimeo/galaxycache/consistenthash"
+	clocks "github.com/vimeo/go-clocks"
 )
 
 const defaultReplicas = 50
@@ -45,6 +47,16 @@ type RemoteFetcher interface {
 	Close() error
 }
 
+// wrapper around consistenthash.Map to track hashes for Peek calls.
+type peekMap struct {
+	// map that never includes "self"
+	// TODO: include dying peers for some time
+	peekMap  *consistenthash.Map
+	initTime time.Time
+
+	// TODO: add support for peer-death
+}
+
 // PeerPicker is in charge of dealing with peers: it contains the hashing
 // options (hash function and number of replicas), consistent hash map of
 // peers, and a map of RemoteFetchers to those peers
@@ -53,10 +65,12 @@ type PeerPicker struct {
 	selfID           string
 	includeSelf      bool
 	peerIDs          *consistenthash.Map
+	peekMap          peekMap
 	fetchers         map[string]RemoteFetcher // keyed by ID
 	mapGen           peerSetGeneration
 	mu               sync.RWMutex
 	opts             HashOptions
+	clock            clocks.Clock
 }
 
 // HashOptions specifies the the hash function and the number of replicas
@@ -72,12 +86,13 @@ type HashOptions struct {
 }
 
 // Creates a peer picker; called when creating a new Universe
-func newPeerPicker(proto FetchProtocol, selfID string, options *HashOptions) *PeerPicker {
+func newPeerPicker(proto FetchProtocol, clk clocks.Clock, selfID string, options *HashOptions) *PeerPicker {
 	pp := &PeerPicker{
 		fetchingProtocol: proto,
 		selfID:           selfID,
 		fetchers:         make(map[string]RemoteFetcher),
 		includeSelf:      true,
+		clock:            clk,
 	}
 	if options != nil {
 		pp.opts = *options
@@ -86,7 +101,26 @@ func newPeerPicker(proto FetchProtocol, selfID string, options *HashOptions) *Pe
 		pp.opts.Replicas = defaultReplicas
 	}
 	pp.peerIDs = consistenthash.New(pp.opts.Replicas, pp.opts.HashFn)
+	pp.peekMap.initTime = clk.Now()
+	pp.peekMap.peekMap = consistenthash.New(pp.opts.Replicas, pp.opts.HashFn)
 	return pp
+}
+
+// When passed a key, the consistent hash is used to determine which
+// peer is responsible getting/caching it
+func (pp *PeerPicker) pickPeekPeer(warmTime time.Duration, key string) (RemoteFetcher, bool) {
+	if pp.clock.Now().Sub(pp.peekMap.initTime) >= warmTime {
+		// if it's been more than warmTime since init, we don't want to make peek requests. (for now)
+		// TODO: handle peer scale-downs.
+		return nil, false
+	}
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	if peerName := pp.peekMap.peekMap.Get(key); peerName != "" {
+		peer, ok := pp.fetchers[peerName]
+		return peer, ok
+	}
+	return nil, false
 }
 
 // When passed a key, the consistent hash is used to determine which
@@ -118,6 +152,8 @@ type Peer struct {
 	// URI should be a valid base URL,
 	// for example "example.net:8000" or "10.32.54.231:8123".
 	URI string
+
+	// TODO: add a start-time to hint peeking
 }
 
 type peerSetGeneration uint64
@@ -298,6 +334,7 @@ func (pp *PeerPicker) insertPeer(peer Peer, fetcher RemoteFetcher) bool {
 	pp.fetchers[peer.ID] = fetcher
 	// No need to initialize a new peer hashring, we're only adding peers.
 	pp.peerIDs.Add(peer.ID)
+	pp.peekMap.peekMap.Add(peer.ID)
 	return true
 }
 
@@ -359,6 +396,13 @@ func (pp *PeerPicker) regenerateHashringLocked() {
 	pp.peerIDs = consistenthash.New(pp.opts.Replicas, pp.opts.HashFn)
 	pp.peerIDs.Add(newPeerIDs...)
 	pp.mapGen++
+
+	pp.peekMap.peekMap = consistenthash.New(pp.opts.Replicas, pp.opts.HashFn)
+	// omit the self-entry, if present when regenerating the peekMap
+	// TODO: move this part to a method on peekMap and track pending removals.
+	//       (we don't want to remove peers from the peek map until we
+	//       start getting errors sending peek requests to them -- that aren't not-founds)
+	pp.peekMap.peekMap.Add(newPeerIDs[selfAdj:]...)
 }
 
 func (pp *PeerPicker) includeSelfVal() bool {
