@@ -47,7 +47,7 @@ type RemoteFetcher interface {
 	Close() error
 }
 
-// wrapper around consistendhash.Map to track hashes for Peek calls.
+// wrapper around consistenthash.Map to track hashes for Peek calls.
 type peekMap struct {
 	// map that never includes "self"
 	// TODO: include dying peers for some time
