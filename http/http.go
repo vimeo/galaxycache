@@ -265,6 +265,9 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 		return nil, err
 	}
 	defer res.Body.Close()
+	// Unconditionally drain any unread bytes in the body so the connection is actually available for reuse.
+	// If io.Copy gets an error we probably can't reuse the connection anyway.
+	defer io.Copy(io.Discard, res.Body)
 	switch res.StatusCode {
 	case http.StatusNotFound:
 		switch galaxyPresent := res.Header.Get(galaxyPresentHeader); galaxyPresent {
