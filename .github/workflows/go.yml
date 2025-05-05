@@ -64,7 +64,7 @@ jobs:
       - name: Test k8swatch with go.work
         env:
           GO111MODULE: on
-        run: go work init . ./k8swatch && cd k8swatch && go test -mod=readonly -count 2 ./...
+        run: go work init . ./k8swatch ./compattest/peerv1.2 && cd k8swatch && go test -mod=readonly -count 2 ./...
 
         # Run all consistenthash Fuzz tests for 30s with go 1.24
       - name: Fuzz Consistent-Hash

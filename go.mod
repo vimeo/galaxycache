@@ -1,6 +1,6 @@
 module github.com/vimeo/galaxycache
 
-go 1.23.0
+go 1.23.8
 
 require (
 	github.com/golang/protobuf v1.5.4
@@ -13,9 +13,12 @@ require (
 
 require (
 	github.com/golang/groupcache v0.0.0-20190702054246-869f871628b6 // indirect
+	github.com/vimeo/galaxycache/compattest/peercfg v0.0.0-00010101000000-000000000000 // indirect
 	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
 	google.golang.org/genproto v0.0.0-20250425173222-7b384671a197 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250414145226-207652e42e2e // indirect
 )
+
+replace github.com/vimeo/galaxycache/compattest/peercfg => ./compattest/peercfg
