@@ -70,6 +70,38 @@ func (m *MapArgs) NewMap() *consistenthash.Map {
 // it computes required value of segsPerKey to make every ordering of
 // the entries in owners appear in the hashring.
 func NewMapArgs(args Args) MapArgs {
+
+	///////////////////////////////////////////////////////////////////////////
+	// Here's how this works:
+	// We not only need segments owned by each individual owner, but we
+	// need to arrange for segments that fallthrough to each other owner.
+	// To make this possible, for each pair of owners, we insert 4 segments to cover both orderings.
+	// For the n=2 case, this will look like (4 segments):
+	// |    a    |      b     |       b       |      a      |
+	// Note: we could make a pass that coalesces this into 2 segments
+	// instead of 4, but it's not worth the complexity in a test package.
+	//
+	// As a result, although we have  n * (n-1) pairs, we need another factor of 2.
+	//
+	// Similarly, the n = 3 case looks more complicated (12 segments):
+	// | a | b | a | c | b | a | b | c | c | a | c | b |
+	//
+	// We try to distribute the segments between 0 and 2^31 to make things
+	// robust, and have space for everything without having to deal with
+	// signed/unsigned conversion issues or overflows.
+	//
+	// For Fallthrough keys, we pick the lowest value for the segment that
+	// we created for that specific fallthrough.
+	// For Single-owner keys, we just pick the first segment for that owner.
+	// Pre-registered keys work the same as single-owner keys, but are
+	// stored in a separate map.
+	//
+	// The keen-eyed observer will note that there are some segments that
+	// can be merged/dedup'd in the n=3 case as well, but as this is a
+	// test-helper package, simplicity is the most important, so it isn't
+	// worth complicating this code with any merging/simplification logic.
+	//////////////////////////////////////////////////////////////////////////
+
 	owners := args.Owners
 	ownersMap := make(map[string][]hashRange, len(owners))
 	segsPerKey := (len(owners) - 1) * 2 // we need to cover both orderings for each pair
