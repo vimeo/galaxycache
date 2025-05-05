@@ -72,7 +72,7 @@ func (m *MapArgs) NewMap() *consistenthash.Map {
 func NewMapArgs(args Args) MapArgs {
 	owners := args.Owners
 	ownersMap := make(map[string][]hashRange, len(owners))
-	segsPerKey := len(owners) - 1
+	segsPerKey := (len(owners) - 1) * 2 // we need to cover both orderings for each pair
 	nSegs := segsPerKey * len(owners)
 	type indexedString struct {
 		idx int
