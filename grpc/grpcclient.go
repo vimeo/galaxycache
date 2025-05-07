@@ -26,6 +26,7 @@ import (
 	pb "github.com/vimeo/galaxycache/galaxycachepb"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -77,7 +78,12 @@ func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, err
 		Key:    []byte(key),
 	}.Build())
 	if err != nil {
-		return nil, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+		switch status.Code(err) {
+		case codes.NotFound:
+			return nil, gc.TrivialNotFoundErr{}
+		default:
+			return nil, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+		}
 	}
 
 	return resp.GetValue(), nil
@@ -93,7 +99,12 @@ func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]b
 		Key:    []byte(key),
 	}.Build())
 	if err != nil {
-		return nil, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+		switch status.Code(err) {
+		case codes.NotFound:
+			return nil, gc.TrivialNotFoundErr{}
+		default:
+			return nil, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+		}
 	}
 
 	return resp.GetValue(), nil
