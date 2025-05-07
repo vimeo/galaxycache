@@ -88,11 +88,20 @@ func NewHTTPFetchProtocol(opts *HTTPOptions) *HTTPFetchProtocol {
 // a new fetcher to fetch from peers via HTTP
 // Prefixes URL with http:// if neither http:// nor https:// are prefixes of
 // the URL argument.
-func (hp *HTTPFetchProtocol) NewFetcher(url string) (gc.RemoteFetcher, error) {
-	if !(strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")) {
-		url = "http://" + url
+func (hp *HTTPFetchProtocol) NewFetcher(urlRaw string) (gc.RemoteFetcher, error) {
+	if !(strings.HasPrefix(urlRaw, "http://") || strings.HasPrefix(urlRaw, "https://")) {
+		urlRaw = "http://" + urlRaw
 	}
-	return &httpFetcher{transport: hp.transport, baseURL: url + hp.basePath}, nil
+	u, urlParseErr := url.Parse(urlRaw)
+	if urlParseErr != nil {
+		return nil, fmt.Errorf("invalid URL: %w", urlParseErr)
+	}
+	if !strings.HasPrefix(u.Path, "/") {
+		u.Path = "/" + u.Path
+		u.RawPath = "/" + u.RawPath
+	}
+
+	return &httpFetcher{transport: hp.transport, baseURL: *u.JoinPath(hp.basePath), basePeekURL: *u.JoinPath(hp.peekBasePath)}, nil
 }
 
 // HTTPHandler implements the HTTP handler necessary to serve an HTTP
@@ -148,19 +157,22 @@ func RegisterHTTPHandler(universe *gc.Universe, opts *HTTPOptions, serveMux *htt
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	peek := false
+	pathPrefix := ""
 	// Parse request.
 	switch {
 	case strings.HasPrefix(r.URL.Path, h.basePath):
+		pathPrefix = h.basePath
 		peek = false
 	case strings.HasPrefix(r.URL.Path, h.peekBasePath):
+		pathPrefix = h.peekBasePath
 		peek = true
 	default:
 		panic("HTTPHandler serving unexpected path: " + r.URL.Path)
 	}
-	strippedPath := r.URL.Path[len(h.basePath):]
+	strippedPath := r.URL.Path[len(pathPrefix):]
 	needsUnescaping := false
 	if r.URL.RawPath != "" && r.URL.RawPath != r.URL.Path {
-		strippedPath = r.URL.RawPath[len(h.basePath):]
+		strippedPath = r.URL.RawPath[len(pathPrefix):]
 		needsUnescaping = true
 	}
 	parts := strings.SplitN(strippedPath, "/", 2)
@@ -230,8 +242,8 @@ const galaxyStatusNotFound = "Not Found"
 
 type httpFetcher struct {
 	transport   http.RoundTripper
-	baseURL     string
-	basePeekURL string
+	baseURL     url.URL
+	basePeekURL url.URL
 }
 
 // Fetch here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
@@ -250,15 +262,13 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 	if peek {
 		baseURL = h.basePeekURL
 	}
-	u := fmt.Sprintf(
-		"%v%v/%v",
-		baseURL,
-		url.PathEscape(galaxy),
-		url.PathEscape(key),
-	)
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
+	u := baseURL.JoinPath(url.PathEscape(galaxy), url.PathEscape(key))
+	req := http.Request{
+		Method:     http.MethodGet,
+		URL:        u,
+		Host:       baseURL.Host,
+		Header:     make(http.Header),
+		ProtoMajor: 1, ProtoMinor: 1,
 	}
 	res, err := h.transport.RoundTrip(req.WithContext(ctx))
 	if err != nil {
@@ -289,7 +299,8 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 		}
 		return data, nil
 	default:
-		return nil, fmt.Errorf("server returned HTTP response status code: %v", res.Status)
+		data, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("server returned HTTP response status code: %v; body: %s", res.Status, string(data))
 	}
 }
 

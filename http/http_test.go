@@ -1,5 +1,6 @@
 /*
 Copyright 2013 Google Inc.
+Copyright 2019-2025 Vimeo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,15 +19,21 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"iter"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	gc "github.com/vimeo/galaxycache"
+	"github.com/vimeo/galaxycache/consistenthash/chtest"
 
 	"go.opencensus.io/plugin/ochttp"
 	"go.opencensus.io/stats/view"
@@ -45,43 +52,95 @@ func TestHTTPHandler(t *testing.T) {
 		nGets     = 100
 	)
 
-	for _, galaxyNameLoop := range []string{"peerFetchTest", "peerFetchTestWithSlash/foobar"} {
-		galaxyName := galaxyNameLoop
-		t.Run(galaxyName, func(t *testing.T) {
+	for _, tbl := range []struct {
+		name       string
+		enablePeek bool
+	}{
+		{name: "peerFetchTest", enablePeek: false},
+		{name: "peerFetchTestWithSlash/foobar", enablePeek: false},
+		{name: "peerFetchWithPeek", enablePeek: true},
+	} {
+		t.Run(tbl.name, func(t *testing.T) {
 
-			var peerAddresses []string
+			var peerAddresses []gc.Peer
+			var peerIDs []string
 			var peerListeners []net.Listener
 
-			for i := 0; i < nRoutines; i++ {
+			for i := range nRoutines {
+				hn := fmt.Sprintf("peer-%03d", i)
 				newListener, err := net.Listen("tcp", "127.0.0.1:0")
 				if err != nil {
 					t.Fatal(err)
 				}
-				peerAddresses = append(peerAddresses, newListener.Addr().String())
+				peerAddresses = append(peerAddresses, gc.Peer{
+					URI: newListener.Addr().String(),
+					ID:  hn,
+				})
+				peerIDs = append(peerIDs, hn)
 				peerListeners = append(peerListeners, newListener)
 			}
 
-			universe := gc.NewUniverse(NewHTTPFetchProtocol(nil), "shouldBeIgnored")
+			// pre-register all the keys that we'll be using
+			regKeys := map[string][]string{}
+			for key := range testKeys(nGets, testKeyTweaks{}) {
+				ownerIdx := (len(regKeys[key]) * 3) % len(peerIDs)
+				regKeys[key] = []string{peerIDs[ownerIdx]}
+			}
+			for key := range testKeys(nGets, testKeyTweaks{joinCopies: 2, joinSep: "/"}) {
+				ownerIdx := (len(regKeys[key]) * 3) % len(peerIDs)
+				regKeys[key] = []string{peerIDs[ownerIdx]}
+			}
+			for key := range testKeys(nGets, testKeyTweaks{pfx: testNotFoundKeyPrefix}) {
+				ownerIdx := (len(regKeys[key]) * 3) % len(peerIDs)
+				regKeys[key] = []string{peerIDs[ownerIdx]}
+			}
+
+			const selfName = "shouldBeIgnored"
+			ma := chtest.NewMapArgs(chtest.Args{
+				Owners:       append(peerIDs, selfName),
+				RegisterKeys: regKeys,
+			})
+			hashOpts := gc.HashOptions{
+				Replicas: ma.NSegsPerKey,
+				HashFn:   ma.HashFunc,
+			}
+			universe := gc.NewUniverse(NewHTTPFetchProtocol(nil), selfName, gc.WithHashOpts(&hashOpts))
 			serveMux := http.NewServeMux()
 			RegisterHTTPHandler(universe, nil, serveMux)
-			err := universe.Set(peerAddresses...)
+			err := universe.SetPeers(peerAddresses...)
 			if err != nil {
 				t.Errorf("Error setting peers: %s", err)
 			}
+			universe.SetIncludeSelf(false) // remove self from hashring
 
 			getter := gc.GetterFunc(func(ctx context.Context, key string, dest gc.Codec) error {
 				return fmt.Errorf("oh no! Local get occurred")
 			})
-			g := universe.NewGalaxy(galaxyName, 1<<20, getter)
+			g := universe.NewGalaxy(tbl.name, 1<<20, getter)
 
+			wg := sync.WaitGroup{}
+			defer wg.Wait()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			for _, listener := range peerListeners {
-				go makeHTTPServerUniverse(ctx, t, galaxyName, peerAddresses, listener)
+			gCh := make(chan *gc.Galaxy, len(peerListeners))
+
+			preSeedReady := atomic.Bool{}
+
+			gs := make([]*gc.Galaxy, 0, len(peerListeners))
+			wg.Add(len(peerListeners))
+			for i, listener := range peerListeners {
+				go func() {
+					defer wg.Done()
+					makeHTTPServerUniverse(ctx, testUniverseSrvParams{t: t, hn: peerIDs[i], gCh: gCh, galaxyName: tbl.name,
+						enablePeek: tbl.enablePeek, peers: peerAddresses, listener: listener,
+						hashOpts:         hashOpts,
+						prefixValPreseed: &preSeedReady})
+				}()
+				gs = append(gs, <-gCh)
 			}
 
-			for _, key := range testKeys(nGets) {
+			for key := range testKeys(nGets, testKeyTweaks{}) {
 				var value gc.StringCodec
 				if err := g.Get(ctx, key, &value); err != nil {
 					t.Fatal(err)
@@ -93,41 +152,114 @@ func TestHTTPHandler(t *testing.T) {
 			}
 			// Try it again, this time with a slash in the middle to ensure we're
 			// handling those characters properly
-			for _, key := range testKeys(nGets) {
+			for key := range testKeys(nGets, testKeyTweaks{joinCopies: 2, joinSep: "/"}) {
 				var value gc.StringCodec
-				testKey := key + "/" + key
-				if err := g.Get(ctx, testKey, &value); err != nil {
+				if err := g.Get(ctx, key, &value); err != nil {
 					t.Fatal(err)
 				}
-				if suffix := ":" + testKey; !strings.HasSuffix(string(value), suffix) {
+				if suffix := ":" + key; !strings.HasSuffix(string(value), suffix) {
 					t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
 				}
-				t.Logf("Get key=%q, value=%q (peer:key)", testKey, value)
+				t.Logf("Get key=%q, value=%q (peer:key)", key, value)
 			}
+			// ... and again
+			// this time with keys that have a prefix that should generate 404s
+			for key := range testKeys(nGets, testKeyTweaks{pfx: testNotFoundKeyPrefix}) {
+				var value gc.StringCodec
+				if err := g.Get(ctx, key, &value); err != nil {
+					if nfErr := (gc.NotFoundErr)(nil); !errors.As(err, &nfErr) {
+						t.Fatal(err)
+					}
+				} else {
+					t.Errorf("get of key %q should have failed with NotFound; got value: %q", testNotFoundKeyPrefix+key, value)
+				}
+			}
+			if tbl.enablePeek {
+				preSeedReady.Store(true)
+				peekKeyValPrefixes := map[string]string{}
+				for i, og := range gs {
+					gName := peerIDs[i]
+					priKeyOwner := peerIDs[(i+1)%len(peerIDs)]
+					key := chtest.FallthroughKey(priKeyOwner, gName)
+					var value gc.StringCodec
+					if _, err := og.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModeNoPeerBackend}, key, &value); err != nil {
+						t.Fatal(err)
+					}
+					peekKeyValPrefixes[key] = "pre-seed:" + gName
+				}
 
+				preSeedReady.Store(false)
+
+				// one more time ... this time with keys that should have been seeded on all instances
+				for key := range peekKeyValPrefixes {
+					var value gc.StringCodec
+					if err := g.Get(ctx, key, &value); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.HasPrefix(string(value), "pre-seed:") {
+						t.Errorf("Get(%q) = %q, want value starting in %q", key, value, "pre-seed")
+					}
+					if suffix := ":" + key; !strings.HasSuffix(string(value), suffix) {
+						t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
+					}
+					t.Logf("Get key=%q, value=%q (peer:key)", key, value)
+				}
+			}
 		})
 	}
 }
 
-func makeHTTPServerUniverse(ctx context.Context, t testing.TB, galaxyName string, addresses []string, listener net.Listener) {
-	universe := gc.NewUniverse(NewHTTPFetchProtocol(nil), listener.Addr().String())
+const testNotFoundKeyPrefix = "not found key/"
+
+type testUniverseSrvParams struct {
+	t          testing.TB
+	hn         string
+	gCh        chan<- *gc.Galaxy
+	galaxyName string
+	enablePeek bool
+	peers      []gc.Peer
+	listener   net.Listener
+
+	hashOpts gc.HashOptions
+
+	// prefix the value with the string "pre-seed" (used to pre-seed some
+	// keys so we can validate that peeking works correctly)
+	prefixValPreseed *atomic.Bool
+}
+
+func makeHTTPServerUniverse(ctx context.Context, p testUniverseSrvParams) {
+	universe := gc.NewUniverse(NewHTTPFetchProtocol(nil), p.hn, gc.WithHashOpts(&p.hashOpts))
 	serveMux := http.NewServeMux()
 	wrappedHandler := &ochttp.Handler{Handler: serveMux}
 	RegisterHTTPHandler(universe, nil, serveMux)
-	err := universe.Set(addresses...)
+	err := universe.SetPeers(p.peers...)
 	if err != nil {
-		t.Errorf("Error setting peers: %s", err)
+		p.t.Errorf("Error setting peers: %s", err)
 	}
 	getter := gc.GetterFunc(func(ctx context.Context, key string, dest gc.Codec) error {
-		dest.UnmarshalBinary([]byte(":" + key))
+		if strings.HasPrefix(key, testNotFoundKeyPrefix) {
+			return gc.TrivialNotFoundErr{}
+		}
+		preSeedPfx := ""
+		if p.prefixValPreseed.Load() {
+			preSeedPfx = "pre-seed"
+		}
+		dest.UnmarshalBinary([]byte(preSeedPfx + ":" + key))
 		return nil
 	})
-	universe.NewGalaxy(galaxyName, 1<<20, getter)
+	gOpts := []gc.GalaxyOption{}
+	if p.enablePeek {
+		gOpts = append(gOpts, gc.WithPreviousPeerPeeking(gc.PeekPeerCfg{
+			PeekTimeout: time.Hour,
+			WarmTime:    time.Hour,
+		}))
+	}
+	p.gCh <- universe.NewGalaxy(p.galaxyName, 1<<20, getter, gOpts...)
 	newServer := http.Server{Handler: wrappedHandler}
 	go func() {
-		err := newServer.Serve(listener)
+		err := newServer.Serve(p.listener)
 		if err != http.ErrServerClosed {
-			t.Errorf("serve failed: %s", err)
+			p.t.Errorf("serve failed: %s", err)
 		}
 	}()
 
@@ -135,10 +267,27 @@ func makeHTTPServerUniverse(ctx context.Context, t testing.TB, galaxyName string
 	newServer.Shutdown(ctx)
 }
 
-func testKeys(n int) (keys []string) {
-	keys = make([]string, n)
-	for i := range keys {
-		keys[i] = strconv.Itoa(i)
+type testKeyTweaks struct {
+	pfx, suffix string
+	joinCopies  int
+	joinSep     string
+}
+
+func testKeys(n int, tweaks testKeyTweaks) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for i := range n {
+			baseVal := strconv.Itoa(i)
+			if tweaks.joinCopies == 0 {
+				if !yield(tweaks.pfx + baseVal + tweaks.suffix) {
+					return
+				}
+			} else {
+				if !yield(tweaks.pfx + strings.Join(
+					slices.Repeat([]string{baseVal},
+						tweaks.joinCopies), tweaks.joinSep) + tweaks.suffix) {
+					return
+				}
+			}
+		}
 	}
-	return
 }
