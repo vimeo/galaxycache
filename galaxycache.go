@@ -342,13 +342,24 @@ type PeekPeerCfg struct {
 	// PeekTimeout is the timeout to use when making Peek requests for this Galaxy.
 	// this may be in the 2-10ms range for local networks, as the remote
 	// end should always service this request from memory.
-	PeekTimeout time.Duration
+	PeekTimeout time.Duration `dialsdesc:"timeout to set on Peek requests to the peer that would own a specific key if that process wasn't in the hash-ring (should be short: 2-10ms because it's a memory-only operation, and if it fails the Galaxy will fall back to calling the BackendGetter)"`
 	// WarmTime indicates how long after this galaxy initializes to stop
 	// making Peek requests for a range after it took over that range.
 	// This should be on par with the cache-warming time for initial startup.
 	// Ranges transfered to this instance from peers that scale-down will
 	// send Peek requests to those dying peers until it starts erroring.
-	WarmTime time.Duration
+	WarmTime time.Duration `dialsdesc:"time after Universe creation at which one should consider the cache warm and to stop making Peek requests to peers"`
+}
+
+// Verify implements the [github.com/vimeo/dials.VerifiedConfig] interface
+func (p *PeekPeerCfg) Verify() error {
+	if p.PeekTimeout < time.Microsecond*100 {
+		return fmt.Errorf("PeekTimeout must be > 100μs; got %s", p.PeekTimeout)
+	}
+	if p.WarmTime < 0 {
+		return fmt.Errorf("WarmTime must be non-negative; got %s", p.WarmTime)
+	}
+	return nil
 }
 
 // GalaxyOption is an interface for implementing functional galaxy options
