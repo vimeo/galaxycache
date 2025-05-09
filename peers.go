@@ -341,6 +341,10 @@ func (pp *PeerPicker) insertPeer(peer Peer, fetcher RemoteFetcher) bool {
 }
 
 func (pp *PeerPicker) add(peer Peer) error {
+	if peer.ID == pp.selfID {
+		pp.setIncludeSelf(true)
+		return nil
+	}
 	// Do a quick check to see if this peer is already there before we acquire the heavy write-lock
 	if pp.checkPeerPresence(peer) {
 		return nil
@@ -369,6 +373,10 @@ func (pp *PeerPicker) removePeers(peerIDs ...string) []RemoteFetcher {
 func (pp *PeerPicker) removePeersLocked(peerIDs ...string) []RemoteFetcher {
 	out := make([]RemoteFetcher, 0, len(peerIDs))
 	for _, peerID := range peerIDs {
+		if peerID == pp.selfID {
+			pp.includeSelf = false
+			continue
+		}
 		f, ok := pp.fetchers[peerID]
 		if ok {
 			out = append(out, f)
