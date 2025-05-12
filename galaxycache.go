@@ -622,13 +622,32 @@ type GetInfo struct {
 
 // GetWithOptions as defined here is the primary "get" called on a galaxy to
 // find the value for the given key, using the following logic:
-// - First, try the local cache; if its a cache hit, we're done
-// - On a cache miss, search for which peer is the owner of the
-// key based on the consistent hash (if SkipPeerFetch is false)
-// - If a different peer is the owner, use the corresponding fetcher
-// to Fetch from it; otherwise, if the calling instance is the key's
-// canonical owner, call the BackendGetter to retrieve the value
-// (which will now be cached locally) -- if SkipBackendFetch is false.
+//
+//   - First, try the local cache; if its a cache hit, we're done
+//
+//   - if the FetchMode is FetchModePeek; we're done, return a Not Found
+//
+//   - otherwise, search for which peer is the owner of the key based on the
+//     consistent hash
+//
+//   - If a different peer is the owner and the FetchMode is not
+//     FetchModeNoPeerBackend: use the corresponding fetcher to Fetch from it
+//
+//   - if the peer request fails with a Not Found; return a Not Found
+//
+//   - if the peer request fails with any other error, fallthrough to the local BackendGetter
+//
+//   - if peer-peeking is enabled, and this instance is the key's owner, and
+//     we're within the configured warmup period, send a Peek request with a
+//     short-deadline to the "fallthrough owner" (who would own this key if the
+//     calling instance wasn't in the hash-ring)
+//
+//   - if that fails or returns Not Found fallthrough
+//
+//   - call the BackendGetter to retrieve the value (which will now be cached
+//     locally).
+//
+//   - return whatever the BackendGetter provides
 func (g *Galaxy) GetWithOptions(ctx context.Context, opts GetOptions, key string, dest Codec) (GetInfo, error) {
 	ctx, tagErr := tag.New(ctx, tag.Upsert(GalaxyKey, g.name))
 	if tagErr != nil {
