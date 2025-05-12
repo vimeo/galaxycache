@@ -522,7 +522,7 @@ func (g *Galaxy) recordRequest(ctx context.Context, h hitLevel, localAuthoritati
 		g.recordStats(ctx, []tag.Mutator{tag.Upsert(CacheLevelKey, h.String())}, MCacheHits.M(1))
 	case hitPeek:
 		g.Stats.PeerPeekHits.Add(1)
-		g.recordStats(ctx, []tag.Mutator{tag.Upsert(CacheLevelKey, h.String())}, MCacheHits.M(1), MPeeks.M(1))
+		g.recordStats(ctx, nil, MPeeks.M(1))
 	case hitPeer:
 		g.Stats.PeerLoads.Add(1)
 		g.recordStats(ctx, nil, MPeerLoads.M(1))
