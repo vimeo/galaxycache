@@ -78,6 +78,7 @@ var (
 var AllViews = []*view.View{
 	{Measure: MGets, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
+	{Measure: MLoadErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCacheHits, TagKeys: []tag.Key{GalaxyKey, CacheLevelKey}, Aggregation: view.Count()},
 	{Measure: MPeerLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MPeerLoadErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
@@ -87,6 +88,7 @@ var AllViews = []*view.View{
 	{Measure: MBackendLoadErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 
 	{Measure: MCoalescedPeeks, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
+	{Measure: MCoalescedPeekHits, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedCacheHits, TagKeys: []tag.Key{GalaxyKey, CacheLevelKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedPeerLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
