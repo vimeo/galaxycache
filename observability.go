@@ -42,7 +42,6 @@ var (
 	MBackendLoads      = stats.Int64("galaxycache/backend_loads", "The number of successful loads from the backend getter", stats.UnitDimensionless)
 	MBackendLoadErrors = stats.Int64("galaxycache/local_load_errors", "The number of failed backend loads", stats.UnitDimensionless)
 	MPeeks             = stats.Int64("galaxycache/peeks", "The number of remote cache hits via Peek requests", stats.UnitDimensionless)
-	MPeekErrors        = stats.Int64("galaxycache/peek_errors", "The number of remote errors via Peek requests", stats.UnitDimensionless)
 
 	MCoalescedLoads        = stats.Int64("galaxycache/coalesced_loads", "The number of loads coalesced by singleflight", stats.UnitDimensionless)
 	MCoalescedCacheHits    = stats.Int64("galaxycache/coalesced_cache_hits", "The number of coalesced times that the cache was hit", stats.UnitDimensionless)
@@ -50,6 +49,7 @@ var (
 	MCoalescedPeeks        = stats.Int64("galaxycache/coalesced_peeks", "The number of coalesced remote loads via Peek requests", stats.UnitDimensionless)
 	MCoalescedPeekHits     = stats.Int64("galaxycache/coalesced_peek_hits", "The number of coalesced remote cache hits via Peek requests", stats.UnitDimensionless)
 	MCoalescedBackendLoads = stats.Int64("galaxycache/coalesced_backend_loads", "The number of coalesced successful loads from the backend getter", stats.UnitDimensionless)
+	MCoalescedPeekErrors   = stats.Int64("galaxycache/coalesced_peek_errors", "The number of coalesced remote Peek requests that failed with errors other than Not Found", stats.UnitDimensionless)
 
 	MServerRequests = stats.Int64("galaxycache/server_requests", "The number of Gets that came over the network from peers", stats.UnitDimensionless)
 	MKeyLength      = stats.Int64("galaxycache/key_length", "The length of keys", stats.UnitBytes)
@@ -78,17 +78,19 @@ var (
 var AllViews = []*view.View{
 	{Measure: MGets, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
+	{Measure: MLoadErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCacheHits, TagKeys: []tag.Key{GalaxyKey, CacheLevelKey}, Aggregation: view.Count()},
 	{Measure: MPeerLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MPeerLoadErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MPeeks, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
-	{Measure: MPeekErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MBackendLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MBackendLoadErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 
 	{Measure: MCoalescedPeeks, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
+	{Measure: MCoalescedPeekHits, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedCacheHits, TagKeys: []tag.Key{GalaxyKey, CacheLevelKey}, Aggregation: view.Count()},
+	{Measure: MCoalescedPeekErrors, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedPeerLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 	{Measure: MCoalescedBackendLoads, TagKeys: []tag.Key{GalaxyKey}, Aggregation: view.Count()},
 
