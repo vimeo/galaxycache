@@ -71,7 +71,7 @@ func (gp *GRPCFetchProtocol) NewFetcher(address string) (gc.RemoteFetcher, error
 	return &grpcFetcher{address: address, conn: conn, client: client}, nil
 }
 
-func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, error) {
+func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, gc.BackendGetInfo, error) {
 	span := trace.FromContext(ctx)
 	span.Annotatef(nil, "peeking from %s; connection state %s", g.address, g.conn.GetState())
 	resp, err := g.client.PeekPeer(ctx, pb.PeekRequest_builder{
@@ -81,18 +81,18 @@ func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, err
 	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
-			return nil, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
 		default:
-			return nil, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+			return nil, gc.BackendGetInfo{}, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
 	}
 
-	return resp.GetValue(), nil
+	return resp.GetValue(), gc.BackendGetInfo{}, nil
 }
 
 // Fetch here implements the RemoteFetcher interface for
 // sending Gets to peers over an RPC connection
-func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	span := trace.FromContext(ctx)
 	span.Annotatef(nil, "fetching from %s; connection state %s", g.address, g.conn.GetState())
 	resp, err := g.client.GetFromPeer(ctx, pb.GetRequest_builder{
@@ -102,13 +102,13 @@ func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]b
 	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
-			return nil, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
 		default:
-			return nil, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+			return nil, gc.BackendGetInfo{}, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
 	}
 
-	return resp.GetValue(), nil
+	return resp.GetValue(), gc.BackendGetInfo{}, nil
 }
 
 // Close here implements the RemoteFetcher interface for

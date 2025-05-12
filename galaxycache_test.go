@@ -222,44 +222,53 @@ func (fetcher *TestFetcher) Close() error {
 }
 
 func (fetcher *TestFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := fetcher.FetchWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+func (fetcher *TestFetcher) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
 	// TODO: switch existing tests over to use fetchMode
 	if fetcher.fail {
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	}
 	switch fetcher.fetchMode {
 	case testFetchModeFail:
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testFetchModeFailTest:
 		fetcher.t.Errorf("unexpected fetch on host %q with key %q", fetcher.hostPrefix, key)
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testFetchModeMiss:
-		return nil, TrivialNotFoundErr{}
+		return nil, BackendGetInfo{}, TrivialNotFoundErr{}
 	case testFetchModeHit:
 		fetcher.hits++
-		return []byte(fetcher.hostPrefix + "got:" + key), nil
+		return []byte(fetcher.hostPrefix + "got:" + key), BackendGetInfo{}, nil
 	default:
 		panic("unknown mode: %s")
 	}
 }
-
 func (fetcher *TestFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := fetcher.PeekWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+func (fetcher *TestFetcher) PeekWithInfo(ctx context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
 	switch fetcher.peekMode {
 	case testPeekModeFail:
 		fetcher.peeks++
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testPeekModeHit:
 		fetcher.peeks++
-		return []byte(fetcher.hostPrefix + "peek got: " + key), nil
+		return []byte(fetcher.hostPrefix + "peek got: " + key), BackendGetInfo{}, nil
 	case testPeekModeMiss:
 		fetcher.peeks++
-		return nil, TrivialNotFoundErr{}
+		return nil, BackendGetInfo{}, TrivialNotFoundErr{}
 	case testPeekModeStallCtx:
 		// sleep for a day (or until the context expires)
 		// This ctx should come from the fake clock anyway, so we
 		// really only need the signal that we're sleeping to make it
 		// back to the outer test.
 		fetcher.clk.SleepFor(ctx, time.Hour*24)
-		return nil, ctx.Err()
+		return nil, BackendGetInfo{}, ctx.Err()
 	default:
 		panic("unknown peek mode " + strconv.Itoa(int(fetcher.peekMode)))
 	}
@@ -578,7 +587,7 @@ func TestHotcache(t *testing.T) {
 				dQPS: windowedAvgQPS{trackEpoch: relNow},
 			}
 			value := g.newValWithStat([]byte("hello"), kStats)
-			g.hotCache.add(keyToAdd, value)
+			g.hotCache.add(keyToAdd, value, time.Time{})
 
 			// blast the key in the hotcache with a bunch of hypothetical gets every few seconds
 			for k := 0; k < tc.numHeatBursts; k++ {
@@ -600,7 +609,7 @@ func TestHotcache(t *testing.T) {
 			}
 			value2 := g.newValWithStat([]byte("hello there"), nil)
 
-			g.hotCache.add(keyToAdd+"2", value2) // ensure that hcStats are properly updated after adding
+			g.hotCache.add(keyToAdd+"2", value2, time.Time{}) // ensure that hcStats are properly updated after adding
 			g.maybeUpdateHotCacheStats()
 			t.Logf("Hottest QPS: %f, Coldest QPS: %f\n", g.hcStatsWithTime.hcs.MostRecentQPS, g.hcStatsWithTime.hcs.LeastRecentQPS)
 
@@ -689,7 +698,7 @@ func TestPromotion(t *testing.T) {
 					t.Error("Found candidate in hotcache")
 				}
 				g.getFromPeer(ctx, tf, key)
-				val, okHot := g.hotCache.get(key)
+				val, _, okHot := g.hotCache.get(key)
 				if !okHot {
 					t.Errorf("key %q missing from hot cache", key)
 				}
@@ -768,7 +777,7 @@ func TestPromotion(t *testing.T) {
 			{
 				galaxy.Get(ctx, testKey, &sc)
 				_, okCandidate := galaxy.candidateCache.get(testKey)
-				value, okHot := galaxy.hotCache.get(testKey)
+				value, _, okHot := galaxy.hotCache.get(testKey)
 				tc.firstCheck(ctx, t, testKey, value, okCandidate, okHot, fetcher, galaxy)
 			}
 			if tc.secondCheck == nil {
@@ -777,7 +786,7 @@ func TestPromotion(t *testing.T) {
 			{
 				galaxy.Get(ctx, testKey, &sc)
 				_, okCandidate := galaxy.candidateCache.get(testKey)
-				value, okHot := galaxy.hotCache.get(testKey)
+				value, _, okHot := galaxy.hotCache.get(testKey)
 				tc.secondCheck(ctx, t, testKey, value, okCandidate, okHot, fetcher, galaxy)
 			}
 

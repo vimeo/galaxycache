@@ -49,6 +49,16 @@ type RemoteFetcher interface {
 	Close() error
 }
 
+// RemoteFetcherWithInfo is an extension of [RemoteFetcher], allowing
+// [RemoteFetcher] implementations to optionally provide [BackendGetInfo]. (the
+// zero-value is assumeed otherwise)
+type RemoteFetcherWithInfo interface {
+	RemoteFetcher
+
+	FetchWithInfo(context context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error)
+	PeekWithInfo(context context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error)
+}
+
 // wrapper around consistenthash.Map to track hashes for Peek calls.
 type peekMap struct {
 	// map that never includes "self"
@@ -68,7 +78,7 @@ type PeerPicker struct {
 	includeSelf      bool
 	peerIDs          *consistenthash.Map
 	peekMap          peekMap
-	fetchers         map[string]RemoteFetcher // keyed by ID
+	fetchers         map[string]RemoteFetcherWithInfo // keyed by ID
 	mapGen           peerSetGeneration
 	mu               sync.RWMutex
 	opts             HashOptions
@@ -87,12 +97,26 @@ type HashOptions struct {
 	HashFn consistenthash.Hash
 }
 
+type remoteFetcherWithInfoAdapter struct {
+	RemoteFetcher
+}
+
+func (r *remoteFetcherWithInfoAdapter) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
+	bs, err := r.RemoteFetcher.Fetch(ctx, galaxy, key)
+	return bs, BackendGetInfo{}, err
+}
+
+func (r *remoteFetcherWithInfoAdapter) PeekWithInfo(ctx context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
+	bs, err := r.RemoteFetcher.Peek(ctx, galaxy, key)
+	return bs, BackendGetInfo{}, err
+}
+
 // Creates a peer picker; called when creating a new Universe
 func newPeerPicker(proto FetchProtocol, clk clocks.Clock, selfID string, options *HashOptions) *PeerPicker {
 	pp := &PeerPicker{
 		fetchingProtocol: proto,
 		selfID:           selfID,
-		fetchers:         make(map[string]RemoteFetcher),
+		fetchers:         make(map[string]RemoteFetcherWithInfo),
 		includeSelf:      true,
 		clock:            clk,
 	}
@@ -110,7 +134,7 @@ func newPeerPicker(proto FetchProtocol, clk clocks.Clock, selfID string, options
 
 // When passed a key, the consistent hash is used to determine which
 // peer is responsible getting/caching it
-func (pp *PeerPicker) pickPeekPeer(warmTime time.Duration, key string) (RemoteFetcher, bool) {
+func (pp *PeerPicker) pickPeekPeer(warmTime time.Duration, key string) (RemoteFetcherWithInfo, bool) {
 	if pp.clock.Now().Sub(pp.peekMap.initTime) >= warmTime {
 		// if it's been more than warmTime since init, we don't want to make peek requests. (for now)
 		// TODO: handle peer scale-downs.
@@ -127,7 +151,7 @@ func (pp *PeerPicker) pickPeekPeer(warmTime time.Duration, key string) (RemoteFe
 
 // When passed a key, the consistent hash is used to determine which
 // peer is responsible getting/caching it
-func (pp *PeerPicker) pickPeer(key string) (RemoteFetcher, bool) {
+func (pp *PeerPicker) pickPeer(key string) (RemoteFetcherWithInfo, bool) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 	if URL := pp.peerIDs.Get(key); URL != "" && URL != pp.selfID {
@@ -201,6 +225,14 @@ func (pp *PeerPicker) diffAbsolutePeers(peers []Peer) peerSetDiff {
 	}
 }
 
+func maybeWrapFetcher(f RemoteFetcher) RemoteFetcherWithInfo {
+	fetcher, hasInfo := f.(RemoteFetcherWithInfo)
+	if !hasInfo {
+		return &remoteFetcherWithInfoAdapter{RemoteFetcher: f}
+	}
+	return fetcher
+}
+
 // if nil, false is returned, there's a version mismatch
 // newFetchers should match indices in diff.added
 func (pp *PeerPicker) updatePeers(diff peerSetDiff, newFetchers []RemoteFetcher) ([]RemoteFetcher, bool) {
@@ -218,7 +250,7 @@ func (pp *PeerPicker) updatePeers(diff peerSetDiff, newFetchers []RemoteFetcher)
 			toClose = append(toClose, fetcher)
 			continue
 		}
-		pp.fetchers[diff.added[i].ID] = fetcher
+		pp.fetchers[diff.added[i].ID] = maybeWrapFetcher(fetcher)
 	}
 
 	for remID := range diff.removed {
@@ -333,7 +365,7 @@ func (pp *PeerPicker) insertPeer(peer Peer, fetcher RemoteFetcher) bool {
 		return false
 	}
 
-	pp.fetchers[peer.ID] = fetcher
+	pp.fetchers[peer.ID] = maybeWrapFetcher(fetcher)
 	// No need to initialize a new peer hashring, we're only adding peers.
 	pp.peerIDs.Add(peer.ID)
 	pp.peekMap.peekMap.Add(peer.ID)
@@ -504,6 +536,14 @@ func (n *nullFetchFetcher) Fetch(context context.Context, galaxy string, key str
 func (n *nullFetchFetcher) Peek(context context.Context, galaxy string, key string) ([]byte, error) {
 	// Always return not found
 	return nil, fmt.Errorf("empty fetcher: %w", TrivialNotFoundErr{})
+}
+func (n *nullFetchFetcher) FetchWithInfo(context context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
+	return nil, BackendGetInfo{}, errors.New("empty fetcher")
+}
+
+func (n *nullFetchFetcher) PeekWithInfo(context context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
+	// Always return not found
+	return nil, BackendGetInfo{}, fmt.Errorf("empty fetcher: %w", TrivialNotFoundErr{})
 }
 
 // Close closes a client-side connection (may be a nop)

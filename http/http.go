@@ -247,17 +247,17 @@ type httpFetcher struct {
 }
 
 // Fetch here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
-func (h *httpFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+func (h *httpFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	return h.fetch(ctx, false, galaxy, key)
 }
 
 // Peek here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
-func (h *httpFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, error) {
+func (h *httpFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	return h.fetch(ctx, true, galaxy, key)
 }
 
 // fetch backs both Fetch and Peek
-func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key string) ([]byte, error) {
+func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	baseURL := h.baseURL
 	if peek {
 		baseURL = h.basePeekURL
@@ -272,7 +272,7 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 	}
 	res, err := h.transport.RoundTrip(req.WithContext(ctx))
 	if err != nil {
-		return nil, err
+		return nil, gc.BackendGetInfo{}, err
 	}
 	defer res.Body.Close()
 	// Unconditionally drain any unread bytes in the body so the connection is actually available for reuse.
@@ -282,25 +282,25 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 	case http.StatusNotFound:
 		switch galaxyPresent := res.Header.Get(galaxyPresentHeader); galaxyPresent {
 		case galaxyStatusNotFound:
-			return nil, errors.New("galaxy not found")
+			return nil, gc.BackendGetInfo{}, errors.New("galaxy not found")
 		case galaxyStatusFound:
-			return nil, fmt.Errorf("key not found: %w", gc.TrivialNotFoundErr{})
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("key not found: %w", gc.TrivialNotFoundErr{})
 		default:
 			// anything else, including a missing header (either an
 			// older version of galaxycache, or the HTTP handler's
 			// not registered for that path)
-			return nil, fmt.Errorf("server returned HTTP response status code: %v; %q header: %q",
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("server returned HTTP response status code: %v; %q header: %q",
 				res.Status, galaxyPresentHeader, galaxyPresent)
 		}
 	case http.StatusOK:
 		data, err := io.ReadAll(res.Body)
 		if err != nil {
-			return nil, fmt.Errorf("reading response body: %v", err)
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("reading response body: %v", err)
 		}
-		return data, nil
+		return data, gc.BackendGetInfo{}, nil
 	default:
 		data, _ := io.ReadAll(res.Body)
-		return nil, fmt.Errorf("server returned HTTP response status code: %v; body: %s", res.Status, string(data))
+		return nil, gc.BackendGetInfo{}, fmt.Errorf("server returned HTTP response status code: %v; body: %s", res.Status, string(data))
 	}
 }
 
