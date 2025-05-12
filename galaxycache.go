@@ -460,12 +460,13 @@ type GalaxyStats struct {
 	PeerPeekHits      AtomicInt // peer Peek hits
 	PeerPeeks         AtomicInt // peer Peek requests
 
-	CoalescedMaincacheHits AtomicInt // maincache hit in singleflight
-	CoalescedHotcacheHits  AtomicInt // hotcache hit in singleflight
-	CoalescedPeerLoads     AtomicInt // peer load in singleflight
-	CoalescedBackendLoads  AtomicInt // backend load in singleflight
-	CoalescedPeerPeekHits  AtomicInt // peek hit in singleflight
-	CoalescedPeerPeeks     AtomicInt // peek request in singleflight
+	CoalescedMaincacheHits  AtomicInt // maincache hit in singleflight
+	CoalescedHotcacheHits   AtomicInt // hotcache hit in singleflight
+	CoalescedPeerLoads      AtomicInt // peer load in singleflight
+	CoalescedBackendLoads   AtomicInt // backend load in singleflight
+	CoalescedPeerPeekHits   AtomicInt // peek hit in singleflight
+	CoalescedPeerPeeks      AtomicInt // peek request in singleflight
+	CoalescedPeerPeekErrors AtomicInt // peek failure (not not-found) in singleflight
 
 	ServerRequests AtomicInt // gets that came over the network from peers
 }
@@ -788,8 +789,6 @@ func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec
 			value, peerErr = g.peekPeer(ctx, key)
 			authoritative = false
 			if peerErr == nil {
-				g.Stats.CoalescedPeerPeeks.Add(1)
-				g.recordStats(ctx, nil, MCoalescedPeeks.M(1))
 				return &valWithLevel{val: value, level: hitPeek, localAuthoritative: true, peerErr: nil, localErr: nil}, nil
 			}
 			if nfErr := NotFoundErr(nil); !errors.As(peerErr, &nfErr) {
@@ -857,10 +856,13 @@ func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, error) 
 			span.Annotatef(nil, "peek miss: %s", peekErr)
 		} else {
 			span.Annotatef(nil, "peek failed: %s", peekErr)
+			g.recordStats(ctx, nil, MCoalescedPeekErrors.M(1))
+			g.Stats.CoalescedPeerPeekErrors.Add(1)
 		}
 		return valWithStat{}, fmt.Errorf("peek failed: %w", peekErr)
 	}
 	g.Stats.CoalescedPeerPeekHits.Add(1)
+	g.recordStats(ctx, nil, MCoalescedPeekHits.M(1))
 	span.Annotate(nil, "peek hit")
 
 	// We only peek for keys that this instance owns, so they'll be unconditionally
