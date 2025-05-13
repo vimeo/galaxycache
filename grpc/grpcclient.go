@@ -18,6 +18,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/trace"
@@ -80,7 +81,7 @@ func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, err
 	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
-			return nil, gc.TrivialNotFoundErr{}
+			return nil, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
 		default:
 			return nil, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
@@ -101,7 +102,7 @@ func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]b
 	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
-			return nil, gc.TrivialNotFoundErr{}
+			return nil, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
 		default:
 			return nil, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
