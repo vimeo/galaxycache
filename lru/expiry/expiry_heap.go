@@ -21,12 +21,23 @@ package expiry
 import (
 	"container/heap"
 	"iter"
+	"math"
 	"time"
+	"weak"
 )
 
 type expiryHeapEnt[T any] struct {
 	expiry time.Duration // time since baseTime on the heap
+	handle weak.Pointer[EntryHandle[T]]
 	elem   T
+}
+
+func (e *expiryHeapEnt[T]) updateLocation(i int) {
+	h := e.handle.Value()
+	if h == nil {
+		return
+	}
+	h.offset = uint(i)
 }
 
 type expiryHeap[T any] struct {
@@ -59,18 +70,28 @@ func (e *expiryHeap[T]) Less(i int, j int) bool {
 
 // Swap swaps the elements with indexes i and j.
 func (e *expiryHeap[T]) Swap(i, j int) {
+	e.ents[j].updateLocation(i)
+	e.ents[i].updateLocation(j)
 	e.ents[i], e.ents[j] = e.ents[j], e.ents[i]
 }
 
 func (e *expiryHeap[T]) Push(x any) {
 	xt := x.(expiryHeapEnt[T])
 	e.ents = append(e.ents, xt)
+	xt.updateLocation(len(e.ents) - 1)
 }
+
+const sentinelOffset = math.MaxInt
 
 func (e *expiryHeap[T]) Pop() any {
 	v := e.ents[len(e.ents)-1]
 	e.ents = e.ents[:len(e.ents)-1]
+	v.updateLocation(sentinelOffset)
 	return v
+}
+
+type EntryHandle[T any] struct {
+	offset uint
 }
 
 // ExpiryTracker maintains a priority queue of payloads with their expiration times.
@@ -80,11 +101,34 @@ type ExpiryTracker[T any] struct {
 }
 
 // Push inserts a new entry
-func (e *ExpiryTracker[T]) Push(expiry time.Time, ent T) {
+func (e *ExpiryTracker[T]) Push(expiry time.Time, ent T) *EntryHandle[T] {
 	if e.baseTime.IsZero() {
 		e.baseTime = expiry
 	}
-	heap.Push(&e.heap, expiryHeapEnt[T]{expiry: expiry.Sub(e.baseTime), elem: ent})
+	handle := EntryHandle[T]{}
+	heap.Push(&e.heap, expiryHeapEnt[T]{expiry: expiry.Sub(e.baseTime), elem: ent, handle: weak.Make(&handle)})
+	return &handle
+}
+
+// Remove deletes the specified entry from the expiry heap.
+func (e *ExpiryTracker[T]) Remove(h *EntryHandle[T]) {
+	if h == nil {
+		// don't try to be too clever with nil pointers
+		return
+	}
+	offset := int(h.offset)
+	if offset == sentinelOffset || offset > len(e.heap.ents)-1 {
+		// If the offset now points past the end of the slice then we're done.
+		return
+	}
+	v := e.heap.ents[offset]
+	if v.handle.Value() != h {
+		// This is a stale handle, don't do anything more
+		return
+	}
+	heap.Remove(&e.heap, offset)
+	// Make sure a double-Remove of this value exits early
+	h.offset = sentinelOffset
 }
 
 // PopAllExpired provides an iterator that yields all entries that have already expired
