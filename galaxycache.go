@@ -43,6 +43,14 @@ import (
 	"go.opencensus.io/trace"
 )
 
+// BackendGetInfo contains
+type BackendGetInfo struct {
+	// Expiration is a timestamp at which this value should be considered expired
+	// the zero-value is no expiration.
+	// Values should always be in the future according to the clock for this universe/galaxy
+	Expiration time.Time
+}
+
 // A BackendGetter loads data for a key.
 type BackendGetter interface {
 	// Get populates dest with the value identified by key
@@ -52,6 +60,29 @@ type BackendGetter interface {
 	// current time, and without relying on cache expiration
 	// mechanisms.
 	Get(ctx context.Context, key string, dest Codec) error
+}
+
+// legacyBackendGetterAdapter is an adapter-type so we can store legacy backend getters in a BackendGetterWithInfo field.
+type legacyBackendGetterAdapter struct {
+	be BackendGetter
+}
+
+// GetWithInfo populates dest with the value identified by key
+// The returned data must be unversioned. That is, the key must
+// uniquely describe the loaded data. One may set Expiration on the
+// BackendGetInfo return value.
+func (l legacyBackendGetterAdapter) GetWithInfo(ctx context.Context, key string, dest Codec) (BackendGetInfo, error) {
+	return BackendGetInfo{}, l.be.Get(ctx, key, dest)
+}
+
+// BackendGetterWithInfo provides the
+type BackendGetterWithInfo interface {
+	// GetWithInfo populates dest with the value identified by key
+	//
+	// The returned data must be unversioned. That is, the key must
+	// uniquely describe the loaded data. One may set Expiration on the
+	// BackendGetInfo return value.
+	GetWithInfo(ctx context.Context, key string, dest Codec) (BackendGetInfo, error)
 }
 
 // A GetterFunc implements BackendGetter with a function.
