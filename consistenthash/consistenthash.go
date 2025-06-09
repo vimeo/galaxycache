@@ -21,8 +21,19 @@ package consistenthash // import "github.com/vimeo/galaxycache/consistenthash"
 import (
 	"encoding/binary"
 	"hash/crc32"
+	"hash/fnv"
 	"sort"
 )
+
+// FNVHash is an alternate hash function for [Map], and wraps/adapts [fnv.New32a].
+// It is generally a better choice of hash function than the default crc32 with
+// the IEEE polynomial ([crc32.ChecksumIEEE]). (the default cannot be updated
+// without breaking existing systems)
+func FNVHash(data []byte) uint32 {
+	f := fnv.New32a()
+	f.Write(data)
+	return f.Sum32()
+}
 
 // Hash maps the data to a uint32 hash-ring
 type Hash func(data []byte) uint32
@@ -40,6 +51,7 @@ type Map struct {
 }
 
 // New constructs a new consistenthash hashring, with segsPerKey segments per added key.
+// It is recommended to use [FNVHash] as the second (fn) argument for new applications/systems.
 func New(segsPerKey int, fn Hash) *Map {
 	m := &Map{
 		segsPerKey: segsPerKey,
