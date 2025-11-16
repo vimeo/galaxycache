@@ -56,6 +56,7 @@ type typedEntry[K comparable, V any] struct {
 	value     V
 	expiry    time.Duration // relative to expiryBase on TypedCache
 	hasExpiry bool
+	expHandle *expiry.EntryHandle[weak.Pointer[llElem[typedEntry[K, V]]]]
 }
 
 // TypedNew creates a new Cache (with types).
@@ -121,14 +122,14 @@ func (c *TypedCache[K, V]) AddExpiring(key K, value V, expiration time.Time) {
 		c.ll.MoveToFront(ele)
 		ele.value.value = value
 		if !expiration.IsZero() {
-			c.expirations.Push(expiration, weak.Make(ele))
+			ele.value.expHandle = c.expirations.Push(expiration, weak.Make(ele))
 		}
 		return
 	}
-	ele := c.ll.PushFront(typedEntry[K, V]{key, value, expiration.Sub(c.expiryBase), !expiration.IsZero()})
+	ele := c.ll.PushFront(typedEntry[K, V]{key, value, expiration.Sub(c.expiryBase), !expiration.IsZero(), nil})
 	c.cache[key] = ele
 	if !expiration.IsZero() {
-		c.expirations.Push(expiration, weak.Make(ele))
+		ele.value.expHandle = c.expirations.Push(expiration, weak.Make(ele))
 	}
 	if c.MaxEntries != 0 && c.ll.Len() > c.MaxEntries {
 		c.RemoveOldest()
@@ -217,6 +218,10 @@ func (c *TypedCache[K, V]) removeElement(e *llElem[typedEntry[K, V]]) {
 	delete(c.cache, kv.key)
 	if c.OnEvicted != nil {
 		c.OnEvicted(kv.key, kv.value)
+	}
+	// Remove the element from the expiry heap
+	if e.value.hasExpiry {
+		c.expirations.Remove(e.value.expHandle)
 	}
 }
 
