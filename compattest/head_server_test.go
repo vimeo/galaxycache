@@ -24,15 +24,15 @@ import (
 	gchttp "github.com/vimeo/galaxycache/http"
 )
 
-func genBackendGetter(galaxy peercfg.Galaxy, selfName string) galaxycache.GetterFunc {
-	return func(ctx context.Context, key string, codec galaxycache.Codec) error {
+func genBackendGetter(galaxy peercfg.Galaxy, selfName string) galaxycache.GetterFuncWithInfo {
+	return func(ctx context.Context, key string, codec galaxycache.Codec) (galaxycache.BackendGetInfo, error) {
 		switch galaxy.HydrationMode {
 		case peercfg.HandlerFail:
-			return errors.New("not a useful error")
+			return galaxycache.BackendGetInfo{}, errors.New("not a useful error")
 		case peercfg.HandlerGRPCNotFound:
-			return status.Errorf(codes.NotFound, "failed to extract key %q", key)
+			return galaxycache.BackendGetInfo{}, status.Errorf(codes.NotFound, "failed to extract key %q", key)
 		case peercfg.HandlerNotFound:
-			return fmt.Errorf("key %w", galaxycache.TrivialNotFoundErr{})
+			return galaxycache.BackendGetInfo{}, fmt.Errorf("key %w", galaxycache.TrivialNotFoundErr{})
 		case peercfg.HandlerSuccess:
 			out := bytes.Buffer{}
 			if galaxy.PrefixSelfName {
@@ -45,12 +45,12 @@ func genBackendGetter(galaxy peercfg.Galaxy, selfName string) galaxycache.Getter
 			}
 			out.WriteString("{some value}")
 			if unmarErr := codec.UnmarshalBinary(out.Bytes()); unmarErr != nil {
-				return fmt.Errorf("unmarshal failed: %w", unmarErr)
+				return galaxycache.BackendGetInfo{}, fmt.Errorf("unmarshal failed: %w", unmarErr)
 			}
-			return nil
+			return galaxycache.BackendGetInfo{Expiration: galaxy.Expiry}, nil
 		default:
 		}
-		return nil
+		return galaxycache.BackendGetInfo{}, nil
 	}
 }
 
@@ -92,7 +92,7 @@ func genUniverse(cfg peercfg.Config) (*galaxycache.Universe, []*galaxycache.Gala
 				WarmTime:    galaxy.Peek.WarmTime,
 			}))
 		}
-		gs[i] = u.NewGalaxy(galaxy.Name, int64(galaxy.Bytes), genBackendGetter(galaxy, cfg.SelfName), gOpts...)
+		gs[i] = u.NewGalaxyWithBackendInfo(galaxy.Name, int64(galaxy.Bytes), genBackendGetter(galaxy, cfg.SelfName), gOpts...)
 	}
 	return u, gs
 }
