@@ -222,7 +222,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var value gc.ByteCodec
-	_, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: fetchMode}, key, &value)
+	info, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: fetchMode}, key, &value)
 	if err != nil {
 		if nfErr := gc.NotFoundErr(nil); errors.As(err, &nfErr) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -231,10 +231,18 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if !info.Expiry.IsZero() {
+		w.Header().Set(expiresHeader, info.Expiry.UTC().Format(nanoHTTPTimeFormat))
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(value)
 }
 
+const expiresHeader = "Expires"
+
+// A copy of [http.TimeFormat] with nanosecond resolution configured.
+// (compatible with [http.TimeFormat])
+const nanoHTTPTimeFormat = "Mon, 02 Jan 2006 15:04:05.000000000 GMT"
 const galaxyPresentHeader = "X-Galaxycache-Galaxy-Status"
 
 const galaxyStatusFound = "Found"
@@ -246,13 +254,27 @@ type httpFetcher struct {
 	basePeekURL url.URL
 }
 
+var _ gc.RemoteFetcherWithInfo = (*httpFetcher)(nil)
+
 // Fetch here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
-func (h *httpFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
+func (h *httpFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := h.fetch(ctx, false, galaxy, key)
+	return bs, err
+}
+
+// Peek here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
+func (h *httpFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := h.fetch(ctx, true, galaxy, key)
+	return bs, err
+}
+
+// Fetch here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
+func (h *httpFetcher) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	return h.fetch(ctx, false, galaxy, key)
 }
 
 // Peek here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
-func (h *httpFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
+func (h *httpFetcher) PeekWithInfo(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	return h.fetch(ctx, true, galaxy, key)
 }
 
@@ -296,6 +318,13 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 		data, err := io.ReadAll(res.Body)
 		if err != nil {
 			return nil, gc.BackendGetInfo{}, fmt.Errorf("reading response body: %v", err)
+		}
+		if expHeader := res.Header.Get(expiresHeader); expHeader != "" {
+			expTime, expParseErr := http.ParseTime(expHeader)
+			if expParseErr != nil {
+				return nil, gc.BackendGetInfo{}, fmt.Errorf("unable to parse Expires header: %w", expParseErr)
+			}
+			return data, gc.BackendGetInfo{Expiration: expTime}, nil
 		}
 		return data, gc.BackendGetInfo{}, nil
 	default:
