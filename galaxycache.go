@@ -85,7 +85,7 @@ type BackendGetterWithInfo interface {
 	//
 	// The returned data must be unversioned. That is, the key must
 	// uniquely describe the loaded data. One may set Expiration on the
-	// BackendGetInfo return value.
+	// [BackendGetInfo] return value.
 	GetWithInfo(ctx context.Context, key string, dest Codec) (BackendGetInfo, error)
 }
 
@@ -94,6 +94,20 @@ type GetterFunc func(ctx context.Context, key string, dest Codec) error
 
 // Get implements Get from BackendGetter
 func (f GetterFunc) Get(ctx context.Context, key string, dest Codec) error {
+	return f(ctx, key, dest)
+}
+
+// A GetterFuncWithInfo implements BackendGetterWithInfo with a function.
+type GetterFuncWithInfo func(ctx context.Context, key string, dest Codec) (BackendGetInfo, error)
+
+// Get implements [BackendGetterWithInfo.Get]
+func (f GetterFuncWithInfo) Get(ctx context.Context, key string, dest Codec) error {
+	_, err := f(ctx, key, dest)
+	return err
+}
+
+// GetWithInfo implements [BackendGetterWithInfo.GetWithInfo]
+func (f GetterFuncWithInfo) GetWithInfo(ctx context.Context, key string, dest Codec) (BackendGetInfo, error) {
 	return f(ctx, key, dest)
 }
 
@@ -219,6 +233,7 @@ func (universe *Universe) NewGalaxyWithBackendInfo(name string, cacheBytes int64
 	}
 	g := &Galaxy{
 		name:              name,
+		parent:            universe,
 		getter:            getter,
 		peerPicker:        universe.peerPicker,
 		cacheBytes:        cacheBytes,
@@ -237,7 +252,8 @@ func (universe *Universe) NewGalaxyWithBackendInfo(name string, cacheBytes int64
 	}
 	g.mainCache.setLRUOnEvicted(nil)
 	g.hotCache.setLRUOnEvicted(g.candidateCache.addToCandidateCache)
-	g.parent = universe
+	g.mainCache.lru.Clock = g.clock
+	g.hotCache.lru.Clock = g.clock
 
 	universe.galaxies[name] = g
 	return g
@@ -754,7 +770,7 @@ func (g *Galaxy) GetWithOptions(ctx context.Context, opts GetOptions, key string
 	lo := loadOpts{
 		fetchMode: opts.FetchMode,
 	}
-	value, destPopulated, err := g.load(ctx, lo, key, dest)
+	value, loadExpiry, destPopulated, err := g.load(ctx, lo, key, dest)
 	if err != nil {
 		span.SetStatus(trace.Status{Code: trace.StatusCodeUnknown, Message: "Failed to load key: " + err.Error()})
 		g.recordStats(ctx, nil, MLoadErrors.M(1))
@@ -763,9 +779,9 @@ func (g *Galaxy) GetWithOptions(ctx context.Context, opts GetOptions, key string
 	value.stats.touch(g.resetIdleStatsAge, g.now())
 	g.recordStats(ctx, nil, MValueLength.M(int64(len(value.data))))
 	if destPopulated {
-		return GetInfo{Expiry: exp}, nil
+		return GetInfo{Expiry: loadExpiry}, nil
 	}
-	return GetInfo{Expiry: exp}, dest.UnmarshalBinary(value.data)
+	return GetInfo{Expiry: loadExpiry}, dest.UnmarshalBinary(value.data)
 }
 
 type valWithLevel struct {
@@ -782,7 +798,7 @@ type loadOpts struct {
 }
 
 // load loads key either by invoking the getter locally or by sending it to another machine.
-func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec) (value valWithStat, destPopulated bool, err error) {
+func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec) (value valWithStat, expiry time.Time, destPopulated bool, err error) {
 	g.Stats.Loads.Add(1)
 	g.recordStats(ctx, nil, MLoads.M(1))
 
@@ -823,13 +839,14 @@ func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec
 
 		authoritative := true
 		var peerErr error
+		var bgInfo BackendGetInfo
 		if peer, ok := g.peerPicker.pickPeer(key); opts.fetchMode.allowPeerFetch() && ok {
-			value, peerErr = g.getFromPeer(ctx, peer, key)
+			value, bgInfo, peerErr = g.getFromPeer(ctx, peer, key)
 			authoritative = false
 			if peerErr == nil {
 				g.Stats.CoalescedPeerLoads.Add(1)
 				g.recordStats(ctx, nil, MCoalescedPeerLoads.M(1))
-				return &valWithLevel{val: value, level: hitPeer, localAuthoritative: false, peerErr: nil, localErr: nil}, nil
+				return &valWithLevel{val: value, level: hitPeer, expiry: bgInfo.Expiration, localAuthoritative: false, peerErr: nil, localErr: nil}, nil
 			}
 
 			g.Stats.PeerLoadErrors.Add(1)
@@ -844,10 +861,10 @@ func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec
 				return nil, peerErr
 			}
 		} else if !ok && g.opts.peekPeer != nil {
-			value, peerErr = g.peekPeer(ctx, key)
+			value, bgInfo, peerErr = g.peekPeer(ctx, key)
 			authoritative = false
 			if peerErr == nil {
-				return &valWithLevel{val: value, level: hitPeek, localAuthoritative: true, peerErr: nil, localErr: nil}, nil
+				return &valWithLevel{val: value, level: hitPeek, expiry: bgInfo.Expiration, localAuthoritative: true, peerErr: nil, localErr: nil}, nil
 			}
 			if nfErr := NotFoundErr(nil); !errors.As(peerErr, &nfErr) {
 				// Not a not-found, mark it as a peek-error.
@@ -871,6 +888,7 @@ func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec
 	})
 	if err == nil {
 		value = viewi.(*valWithLevel).val
+		expiry = viewi.(*valWithLevel).expiry
 		level := viewi.(*valWithLevel).level
 		authoritative := viewi.(*valWithLevel).localAuthoritative
 		g.recordRequest(ctx, level, authoritative) // record the hits for all load calls, including those that tagged onto the singleflight
@@ -891,11 +909,11 @@ func (g *Galaxy) getLocally(ctx context.Context, key string, dest Codec) ([]byte
 	return mar, bgInfo, marErr
 }
 
-func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, error) {
+func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, BackendGetInfo, error) {
 	peer, ok := g.parent.peerPicker.pickPeekPeer(g.opts.peekPeer.WarmTime, key)
 	if !ok {
 		// just pretend it's a cache-miss (it's easier that way)
-		return valWithStat{}, TrivialNotFoundErr{}
+		return valWithStat{}, BackendGetInfo{}, TrivialNotFoundErr{}
 	}
 
 	// This is a quick inmemory lookup; we want to set an aggressive
@@ -918,7 +936,7 @@ func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, error) 
 			g.recordStats(ctx, nil, MCoalescedPeekErrors.M(1))
 			g.Stats.CoalescedPeerPeekErrors.Add(1)
 		}
-		return valWithStat{}, fmt.Errorf("peek failed: %w", peekErr)
+		return valWithStat{}, BackendGetInfo{}, fmt.Errorf("peek failed: %w", peekErr)
 	}
 	g.Stats.CoalescedPeerPeekHits.Add(1)
 	g.recordStats(ctx, nil, MCoalescedPeekHits.M(1))
@@ -930,13 +948,13 @@ func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, error) 
 	value := g.newValWithStat(peekVal, nil)
 	g.populateCache(ctx, key, value, &g.mainCache, bgInfo)
 
-	return value, nil
+	return value, bgInfo, nil
 }
 
-func (g *Galaxy) getFromPeer(ctx context.Context, peer RemoteFetcherWithInfo, key string) (valWithStat, error) {
+func (g *Galaxy) getFromPeer(ctx context.Context, peer RemoteFetcherWithInfo, key string) (valWithStat, BackendGetInfo, error) {
 	data, bgInfo, err := peer.FetchWithInfo(ctx, g.name, key)
 	if err != nil {
-		return valWithStat{}, err
+		return valWithStat{}, BackendGetInfo{}, err
 	}
 	kStats, ok := g.candidateCache.get(key)
 	if !ok {
@@ -960,7 +978,7 @@ func (g *Galaxy) getFromPeer(ctx context.Context, peer RemoteFetcherWithInfo, ke
 	if g.opts.promoter.ShouldPromote(key, value.data, stats) {
 		g.populateCache(ctx, key, value, &g.hotCache, bgInfo)
 	}
-	return value, nil
+	return value, bgInfo, nil
 }
 
 func (g *Galaxy) lookupCache(key string) (valWithStat, time.Time, hitLevel) {

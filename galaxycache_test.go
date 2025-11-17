@@ -23,8 +23,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,16 +52,20 @@ func initSetup() (*Universe, context.Context, chan string) {
 	return NewUniverse(&TestProtocol{TestFetchers: map[string]*TestFetcher{}}, "test"), context.TODO(), make(chan string)
 }
 
-func setupStringGalaxyTest(cacheFills *AtomicInt) (*Galaxy, context.Context, chan string) {
+func setupStringGalaxyTest(cacheFills *AtomicInt, clk clocks.Clock, ttl time.Duration) (*Galaxy, context.Context, chan string) {
 	universe, ctx, stringc := initSetup()
-	stringGalaxy := universe.NewGalaxy(stringGalaxyName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Codec) error {
+	stringGalaxy := universe.NewGalaxyWithBackendInfo(stringGalaxyName, cacheSize, GetterFuncWithInfo(func(_ context.Context, key string, dest Codec) (BackendGetInfo, error) {
 		if key == fromChan {
 			key = <-stringc
 		}
 		cacheFills.Add(1)
 		str := "ECHO:" + key
-		return dest.UnmarshalBinary([]byte(str))
-	}))
+		expiration := time.Time{}
+		if ttl > 0 {
+			expiration = clk.Now().Add(ttl)
+		}
+		return BackendGetInfo{Expiration: expiration}, dest.UnmarshalBinary([]byte(str))
+	}), WithClock(clk))
 	return stringGalaxy, ctx, stringc
 }
 
@@ -67,7 +73,7 @@ func setupStringGalaxyTest(cacheFills *AtomicInt) (*Galaxy, context.Context, cha
 // outstanding callers
 func TestGetDupSuppress(t *testing.T) {
 	var cacheFills AtomicInt
-	stringGalaxy, ctx, stringc := setupStringGalaxyTest(&cacheFills)
+	stringGalaxy, ctx, stringc := setupStringGalaxyTest(&cacheFills, clocks.DefaultClock(), 0)
 	// Start two BackendGetters. The first should block (waiting reading
 	// from stringc) and the second should latch on to the first
 	// one.
@@ -88,6 +94,7 @@ func TestGetDupSuppress(t *testing.T) {
 	// TODO(bradfitz): decide whether there are any non-offensive
 	// debug/test hooks that could be added to singleflight to
 	// make a sleep here unnecessary.
+	// (this should be able to use testing/synctest after we upgrade to go 1.25)
 	time.Sleep(250 * time.Millisecond)
 
 	// Unblock the first getter, which should unblock the second
@@ -113,8 +120,9 @@ func countFills(f func(), cacheFills *AtomicInt) int64 {
 }
 
 func TestCaching(t *testing.T) {
+	t.Parallel()
 	var cacheFills AtomicInt
-	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills)
+	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, clocks.DefaultClock(), 0)
 	fills := countFills(func() {
 		for i := 0; i < 10; i++ {
 			var s StringCodec
@@ -128,9 +136,35 @@ func TestCaching(t *testing.T) {
 	}
 }
 
+func TestCachingWithExpiry(t *testing.T) {
+	t.Parallel()
+	var cacheFills AtomicInt
+	fc := fake.NewClock(time.Now())
+	// we'll set the ttl 1 minute in the future and advance by 31s per-iteration, so we get 5 fetches
+	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, fc, time.Minute)
+	possibleExpiries := map[time.Time]struct{}{}
+	fills := countFills(func() {
+		for range 10 {
+			possibleExpiries[fc.Now().Add(time.Minute)] = struct{}{}
+			var s StringCodec
+			if info, err := stringGalaxy.GetWithOptions(ctx, GetOptions{}, "TestCaching-key", &s); err != nil {
+				t.Fatal(err)
+			} else if _, availExp := possibleExpiries[info.Expiry]; !availExp {
+				t.Errorf("unexpected expiry: %s; expected one of: %v", info.Expiry, slices.Collect(maps.Keys(possibleExpiries)))
+			} else if info.Expiry.Sub(fc.Now()) < 0 {
+				t.Errorf("received expired item: current time %s; got %s", fc.Now(), info.Expiry)
+			}
+			fc.Advance(time.Second * 31)
+		}
+	}, &cacheFills)
+	if fills != 5 {
+		t.Errorf("expected 5 cache fill; got %d", fills)
+	}
+}
+
 func TestCacheEviction(t *testing.T) {
 	var cacheFills AtomicInt
-	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills)
+	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, clocks.DefaultClock(), 0)
 	testKey := "TestCacheEviction-key"
 	getTestKey := func() {
 		var res StringCodec
