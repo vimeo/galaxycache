@@ -63,7 +63,7 @@ func NewGRPCFetchProtocol(dialOpts ...grpc.DialOption) *GRPCFetchProtocol {
 // GRPCFetchProtocol by constructing a new fetcher to fetch
 // from peers via GRPC
 func (gp *GRPCFetchProtocol) NewFetcher(address string) (gc.RemoteFetcher, error) {
-	conn, err := grpc.Dial(address, gp.PeerDialOptions...)
+	conn, err := grpc.NewClient(address, gp.PeerDialOptions...)
 	if err != nil {
 		return nil, err
 	}
