@@ -71,7 +71,14 @@ func (gp *GRPCFetchProtocol) NewFetcher(address string) (gc.RemoteFetcher, error
 	return &grpcFetcher{address: address, conn: conn, client: client}, nil
 }
 
-func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, gc.BackendGetInfo, error) {
+var _ gc.RemoteFetcherWithInfo = (*grpcFetcher)(nil)
+
+func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, error) {
+	bs, _, err := g.PeekWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+func (g *grpcFetcher) PeekWithInfo(ctx context.Context, galaxy, key string) ([]byte, gc.BackendGetInfo, error) {
 	span := trace.FromContext(ctx)
 	span.Annotatef(nil, "peeking from %s; connection state %s", g.address, g.conn.GetState())
 	resp, err := g.client.PeekPeer(ctx, pb.PeekRequest_builder{
@@ -86,13 +93,24 @@ func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, gc.
 			return nil, gc.BackendGetInfo{}, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
 	}
+	bgInfo := gc.BackendGetInfo{}
+	if resp.HasExpiry() {
+		bgInfo.Expiration = resp.GetExpiry().AsTime()
+	}
 
-	return resp.GetValue(), gc.BackendGetInfo{}, nil
+	return resp.GetValue(), bgInfo, nil
 }
 
 // Fetch here implements the RemoteFetcher interface for
 // sending Gets to peers over an RPC connection
-func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
+func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := g.FetchWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+// FetchWithInfo here implements the RemoteFetcher interface for
+// sending Gets to peers over an RPC connection
+func (g *grpcFetcher) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	span := trace.FromContext(ctx)
 	span.Annotatef(nil, "fetching from %s; connection state %s", g.address, g.conn.GetState())
 	resp, err := g.client.GetFromPeer(ctx, pb.GetRequest_builder{
@@ -108,7 +126,12 @@ func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]b
 		}
 	}
 
-	return resp.GetValue(), gc.BackendGetInfo{}, nil
+	bgInfo := gc.BackendGetInfo{}
+	if resp.HasExpiry() {
+		bgInfo.Expiration = resp.GetExpiry().AsTime()
+	}
+
+	return resp.GetValue(), bgInfo, nil
 }
 
 // Close here implements the RemoteFetcher interface for
