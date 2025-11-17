@@ -210,6 +210,8 @@ type TestProtocol struct {
 	fetchModes   map[string]testFetchMode
 	mu           sync.Mutex
 
+	keyExpiration time.Time
+
 	// If true, configure TestFetchers to prefix returned values with the hostname/URI as a prefix
 	hostInVal bool
 
@@ -239,14 +241,15 @@ const (
 )
 
 type TestFetcher struct {
-	hits       int
-	peeks      int
-	fail       bool
-	fetchMode  testFetchMode
-	peekMode   testPeekMode
-	uri        string
-	hostPrefix string // optionally include the fetcher's URI as a prefix in the result
-	clk        clocks.Clock
+	hits          int
+	peeks         int
+	fail          bool
+	fetchMode     testFetchMode
+	peekMode      testPeekMode
+	uri           string
+	hostPrefix    string // optionally include the fetcher's URI as a prefix in the result
+	clk           clocks.Clock
+	keyExpiration time.Time
 
 	t testing.TB
 }
@@ -275,7 +278,7 @@ func (fetcher *TestFetcher) FetchWithInfo(ctx context.Context, galaxy string, ke
 		return nil, BackendGetInfo{}, TrivialNotFoundErr{}
 	case testFetchModeHit:
 		fetcher.hits++
-		return []byte(fetcher.hostPrefix + "got:" + key), BackendGetInfo{}, nil
+		return []byte(fetcher.hostPrefix + "got:" + key), BackendGetInfo{fetcher.keyExpiration}, nil
 	default:
 		panic("unknown mode: %s")
 	}
@@ -292,7 +295,7 @@ func (fetcher *TestFetcher) PeekWithInfo(ctx context.Context, galaxy string, key
 		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testPeekModeHit:
 		fetcher.peeks++
-		return []byte(fetcher.hostPrefix + "peek got: " + key), BackendGetInfo{}, nil
+		return []byte(fetcher.hostPrefix + "peek got: " + key), BackendGetInfo{fetcher.keyExpiration}, nil
 	case testPeekModeMiss:
 		fetcher.peeks++
 		return nil, BackendGetInfo{}, TrivialNotFoundErr{}
@@ -302,7 +305,7 @@ func (fetcher *TestFetcher) PeekWithInfo(ctx context.Context, galaxy string, key
 		// really only need the signal that we're sleeping to make it
 		// back to the outer test.
 		fetcher.clk.SleepFor(ctx, time.Hour*24)
-		return nil, BackendGetInfo{}, ctx.Err()
+		return nil, BackendGetInfo{fetcher.keyExpiration}, ctx.Err()
 	default:
 		panic("unknown peek mode " + strconv.Itoa(int(fetcher.peekMode)))
 	}
@@ -320,14 +323,15 @@ func (proto *TestProtocol) NewFetcher(url string) (RemoteFetcher, error) {
 		}
 	}
 	newTestFetcher := &TestFetcher{
-		hits:       0,
-		fail:       false,
-		fetchMode:  fm,
-		peekMode:   testPeekModeMiss,
-		uri:        url,
-		hostPrefix: hostPfx,
-		clk:        proto.clk,
-		t:          proto.t,
+		hits:          0,
+		fail:          false,
+		fetchMode:     fm,
+		peekMode:      testPeekModeMiss,
+		uri:           url,
+		hostPrefix:    hostPfx,
+		clk:           proto.clk,
+		t:             proto.t,
+		keyExpiration: proto.keyExpiration,
 	}
 	proto.mu.Lock()
 	defer proto.mu.Unlock()

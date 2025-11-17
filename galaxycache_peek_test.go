@@ -11,19 +11,19 @@ import (
 	"github.com/vimeo/go-clocks/fake"
 )
 
-type testHelpStrGetter func(key string) (string, error)
+type testHelpStrGetter func(key string) (string, BackendGetInfo, error)
 
 // Get populates dest with the value identified by key
 // The returned data must be unversioned. That is, key must
 // uniquely describe the loaded data, without an implicit
 // current time, and without relying on cache expiration
 // mechanisms.
-func (t testHelpStrGetter) Get(_ context.Context, key string, dest Codec) error {
-	v, err := t(key)
+func (t testHelpStrGetter) GetWithInfo(_ context.Context, key string, dest Codec) (BackendGetInfo, error) {
+	v, bi, err := t(key)
 	if err != nil {
-		return err
+		return BackendGetInfo{}, err
 	}
-	return dest.UnmarshalBinary([]byte(v))
+	return bi, dest.UnmarshalBinary([]byte(v))
 }
 
 func TestGalaxycacheGetWithPeek(t *testing.T) {
@@ -50,6 +50,7 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 	type checkStep struct {
 		key         string
 		expVal      string
+		expExpiry   time.Time
 		expErr      bool
 		checkErr    func(t testing.TB, idx int, getErr error)
 		timeoutPeek bool // arrange for a timeout
@@ -64,10 +65,12 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includeSelf  bool
 		setClock     time.Time
 
+		expiry time.Time
+
 		// getter for locally fetched values (may call t.Error/Errorf,
 		// but not t.Fatal/Fatalf, as it might be called from another
 		// goroutine).
-		localGetter func(t testing.TB, key string) (string, error)
+		localGetter func(t testing.TB, key string) (string, BackendGetInfo, error)
 		peekModes   map[string]testPeekMode  // configure peek modes per-host
 		fetchModes  map[string]testFetchMode // configure fetch modes per-host
 
@@ -79,9 +82,9 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime,
-		localGetter: func(t testing.TB, key string) (string, error) {
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
 			t.Errorf("unexpected local fetch (peek should succeed on peer)")
-			return "", fmt.Errorf("unexpected call")
+			return "", BackendGetInfo{}, fmt.Errorf("unexpected call")
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeHit,
@@ -130,12 +133,74 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 			peer2Addr: 1,
 		},
 	}, {
+		name:         "peeks_hit_each_peer_with_expiry",
+		includePeers: []int{0, 1, 2},
+		includeSelf:  true,
+		setClock:     baseTime,
+		expiry:       baseTime.Add(time.Hour * 84),
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			t.Errorf("unexpected local fetch (peek should succeed on peer)")
+			return "", BackendGetInfo{}, fmt.Errorf("unexpected call")
+		},
+		peekModes: map[string]testPeekMode{
+			peer0Addr: testPeekModeHit,
+			peer1Addr: testPeekModeHit,
+			peer2Addr: testPeekModeHit,
+		},
+		checkSteps: []checkStep{
+			{
+				key:       chtest.FallthroughKey(self, peer0),
+				expVal:    peer0Addr + ": peek got: " + chtest.FallthroughKey(self, peer0),
+				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+			{
+				// second fetch, since the key should now be in the main cache
+				key:    chtest.FallthroughKey(self, peer0),
+				expVal: peer0Addr + ": peek got: " + chtest.FallthroughKey(self, peer0),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+			{
+				key:       chtest.FallthroughKey(self, peer1),
+				expVal:    peer1Addr + ": peek got: " + chtest.FallthroughKey(self, peer1),
+				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+			{
+				key:    chtest.FallthroughKey(self, peer1),
+				expVal: peer1Addr + ": peek got: " + chtest.FallthroughKey(self, peer1),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+			{
+				key:       chtest.FallthroughKey(self, peer2),
+				expVal:    peer2Addr + ": peek got: " + chtest.FallthroughKey(self, peer2),
+				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+			{
+				key:    chtest.FallthroughKey(self, peer2),
+				expVal: peer2Addr + ": peek got: " + chtest.FallthroughKey(self, peer2),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+		},
+		expPeeks: map[string]int{
+			peer0Addr: 1,
+			peer1Addr: 1,
+			peer2Addr: 1,
+		},
+	}, {
 		name:         "peeks_timeout_each_peer",
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime,
-		localGetter: func(t testing.TB, key string) (string, error) {
-			return "fizzlebat: " + key, nil
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "fizzlebat: " + key, BackendGetInfo{}, nil
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeStallCtx,
@@ -169,8 +234,8 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime,
-		localGetter: func(t testing.TB, key string) (string, error) {
-			return "fizzlebat: " + key, nil
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "fizzlebat: " + key, BackendGetInfo{Expiration: baseTime.Add(time.Hour * 3)}, nil
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeMiss,
@@ -182,16 +247,19 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 				key:         chtest.FallthroughKey(self, peer0),
 				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer0),
 				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Hour * 3),
 			},
 			{
 				key:         chtest.FallthroughKey(self, peer1),
 				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer1),
 				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Hour * 3),
 			},
 			{
 				key:         chtest.FallthroughKey(self, peer2),
 				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer2),
 				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Hour * 3),
 			},
 		},
 		expPeeks: map[string]int{
@@ -200,12 +268,12 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 			peer2Addr: 1,
 		},
 	}, {
-		name:         "peeks_error_each_peer",
+		name:         "peeks_error_each_peer_with_expiry",
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime,
-		localGetter: func(t testing.TB, key string) (string, error) {
-			return "fizzlebat: " + key, nil
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "fizzlebat: " + key, BackendGetInfo{Expiration: baseTime.Add(time.Minute * 20)}, nil
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeFail,
@@ -217,16 +285,19 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 				key:         chtest.FallthroughKey(self, peer0),
 				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer0),
 				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Minute * 20),
 			},
 			{
 				key:         chtest.FallthroughKey(self, peer1),
 				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer1),
 				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Minute * 20),
 			},
 			{
 				key:         chtest.FallthroughKey(self, peer2),
 				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer2),
 				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Minute * 20),
 			},
 		},
 		expPeeks: map[string]int{
@@ -239,8 +310,8 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime.Add(warmPeriod),
-		localGetter: func(t testing.TB, key string) (string, error) {
-			return "fizzlebat: " + key, nil
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "fizzlebat: " + key, BackendGetInfo{}, nil
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeHit,
@@ -270,13 +341,51 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 			peer2Addr: 0,
 		},
 	}, {
+		name:         "no_peeks_past_warm_expiring",
+		includePeers: []int{0, 1, 2},
+		includeSelf:  true,
+		setClock:     baseTime.Add(warmPeriod),
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "fizzlebat: " + key, BackendGetInfo{Expiration: baseTime.Add(time.Hour)}, nil
+		},
+		peekModes: map[string]testPeekMode{
+			peer0Addr: testPeekModeHit,
+			peer1Addr: testPeekModeHit,
+			peer2Addr: testPeekModeHit,
+		},
+		checkSteps: []checkStep{
+			{
+				key:         chtest.FallthroughKey(self, peer0),
+				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer0),
+				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Hour),
+			},
+			{
+				key:         chtest.FallthroughKey(self, peer1),
+				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer1),
+				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Hour),
+			},
+			{
+				key:         chtest.FallthroughKey(self, peer2),
+				expVal:      "fizzlebat: " + chtest.FallthroughKey(self, peer2),
+				timeoutPeek: false,
+				expExpiry:   baseTime.Add(time.Hour),
+			},
+		},
+		expPeeks: map[string]int{
+			peer0Addr: 0,
+			peer1Addr: 0,
+			peer2Addr: 0,
+		},
+	}, {
 		name:         "not_found_remote_no_local_no_peeks",
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime.Add(warmPeriod),
-		localGetter: func(t testing.TB, key string) (string, error) {
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
 			t.Errorf("unexpected local fetch (fetch should fail with NotFound on peer)")
-			return "", fmt.Errorf("unexpected call")
+			return "", BackendGetInfo{}, fmt.Errorf("unexpected call")
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeMiss,
@@ -333,8 +442,8 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime.Add(warmPeriod),
-		localGetter: func(t testing.TB, key string) (string, error) {
-			return "fizzlebat: " + key, nil
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "fizzlebat: " + key, BackendGetInfo{}, nil
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeHit,
@@ -382,9 +491,9 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime.Add(warmPeriod),
-		localGetter: func(t testing.TB, key string) (string, error) {
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
 			t.Errorf("unexpected local fetch (fetch should fail with NotFound on peer)")
-			return "", fmt.Errorf("unexpected call")
+			return "", BackendGetInfo{}, fmt.Errorf("unexpected call")
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeMiss,
@@ -450,8 +559,8 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includePeers: []int{0, 1, 2},
 		includeSelf:  true,
 		setClock:     baseTime.Add(warmPeriod),
-		localGetter: func(t testing.TB, key string) (string, error) {
-			return "", TrivialNotFoundErr{}
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			return "", BackendGetInfo{}, TrivialNotFoundErr{}
 		},
 		peekModes: map[string]testPeekMode{
 			peer0Addr: testPeekModeMiss,
@@ -518,12 +627,13 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 			fc := fake.NewClock(baseTime)
 
 			fp := TestProtocol{
-				TestFetchers: map[string]*TestFetcher{},
-				dialFails:    map[string]struct{}{},
-				peekModes:    tbl.peekModes,
-				fetchModes:   tbl.fetchModes,
-				hostInVal:    true,
-				clk:          fc,
+				TestFetchers:  map[string]*TestFetcher{},
+				dialFails:     map[string]struct{}{},
+				peekModes:     tbl.peekModes,
+				fetchModes:    tbl.fetchModes,
+				hostInVal:     true,
+				clk:           fc,
+				keyExpiration: tbl.expiry,
 			}
 			u := NewUniverse(&fp, self, WithHashOpts(
 				&HashOptions{Replicas: chArgs.NSegsPerKey, HashFn: chArgs.HashFunc}),
@@ -535,12 +645,12 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 			}
 			defer u.Shutdown()
 
-			getter := testHelpStrGetter(func(key string) (string, error) {
+			getter := testHelpStrGetter(func(key string) (string, BackendGetInfo, error) {
 				return tbl.localGetter(t, key)
 			})
 
 			peekTimeout := time.Millisecond * 3
-			g := u.NewGalaxy("easy come; easy go", 256, getter, WithPreviousPeerPeeking(PeekPeerCfg{
+			g := u.NewGalaxyWithBackendInfo("easy come; easy go", 256, getter, WithPreviousPeerPeeking(PeekPeerCfg{
 				WarmTime:    warmPeriod,
 				PeekTimeout: peekTimeout},
 			))
@@ -552,13 +662,14 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 			for i, step := range tbl.checkSteps {
 				c := StringCodec("")
 				var getErr error
+				var getInfo GetInfo
 				if !step.timeoutPeek {
-					_, getErr = g.GetWithOptions(ctx, step.getOpts, step.key, &c)
+					getInfo, getErr = g.GetWithOptions(ctx, step.getOpts, step.key, &c)
 				} else {
 					doneCh := make(chan struct{})
 					go func() {
 						defer close(doneCh)
-						_, getErr = g.GetWithOptions(ctx, step.getOpts, step.key, &c)
+						getInfo, getErr = g.GetWithOptions(ctx, step.getOpts, step.key, &c)
 					}()
 					fc.AwaitSleepers(1)
 					fc.Advance(peekTimeout)
@@ -575,6 +686,8 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 					}
 					t.Errorf("unexpected error fetching step %d; key %q: %s", i, step.key, getErr)
 					continue
+				} else if !getInfo.Expiry.Equal(step.expExpiry) {
+					t.Errorf("unexpected expiry: %s; expected %s", getInfo.Expiry, step.expExpiry)
 				}
 				if string(c) != step.expVal {
 					t.Errorf("unexpected value for key %q in step %d\nwant: %q\n got %q", step.key, i, step.expVal, c)
