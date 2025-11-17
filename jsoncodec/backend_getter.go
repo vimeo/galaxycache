@@ -47,10 +47,10 @@ func (b backendGetter[T]) Get(ctx context.Context, key string, dest galaxycache.
 		d.Set(out)
 		return nil
 	}
-	return b.setSlow(out, dest)
+	return setSlow(out, dest)
 }
 
-func (b backendGetter[T]) setSlow(out T, dest galaxycache.Codec) error {
+func setSlow[T any](out T, dest galaxycache.Codec) error {
 	vs, mErr := json.Marshal(out)
 	if mErr != nil {
 		return fmt.Errorf("failed to marshal value as bytes: %w", mErr)
@@ -60,4 +60,30 @@ func (b backendGetter[T]) setSlow(out T, dest galaxycache.Codec) error {
 		return fmt.Errorf("destination codec (type %T) Unmarshal failed: %w", dest, uErr)
 	}
 	return nil
+}
+
+// BackendGetterWithInfo is an adapter that implements galaxycache.BackendGetter
+// (it wraps an unexported type because type-inference is much better on function-calls)
+func BackendGetterWithInfo[T any](f func(ctx context.Context, key string) (T, galaxycache.BackendGetInfo, error)) galaxycache.BackendGetterWithInfo {
+	return backendGetterWithInfo[T](f)
+}
+
+// backendGetter is an adapter type that implements galaxycache.BackendGetter
+type backendGetterWithInfo[T any] func(ctx context.Context, key string) (T, galaxycache.BackendGetInfo, error)
+
+// GetWithInfo populates dest with the value identified by `key`
+// The returned data must be unversioned. That is, `key` must
+// uniquely describe the loaded data, without an implicit
+// current time, and without relying on cache expiration
+// mechanisms.
+func (b backendGetterWithInfo[T]) GetWithInfo(ctx context.Context, key string, dest galaxycache.Codec) (galaxycache.BackendGetInfo, error) {
+	out, bgInfo, bgErr := b(ctx, key)
+	if bgErr != nil {
+		return galaxycache.BackendGetInfo{}, bgErr
+	}
+	if d, ok := dest.(*Codec[T]); ok {
+		d.Set(out)
+		return bgInfo, nil
+	}
+	return bgInfo, setSlow(out, dest)
 }
