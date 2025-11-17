@@ -22,6 +22,8 @@ package galaxycachepb;
 option go_package = "github.com/vimeo/galaxycache/galaxycachepb";
 
 import "google/protobuf/go_features.proto";
+import "google/protobuf/timestamp.proto";
+
 option features.(pb.go).api_level = API_OPAQUE;
 option features.field_presence = IMPLICIT;
 
@@ -33,6 +35,7 @@ message GetRequest {
 message GetResponse {
   bytes value = 1;
   double minute_qps = 2;
+  google.protobuf.Timestamp expiry = 3;
 }
 
 message PeekRequest {
@@ -42,6 +45,7 @@ message PeekRequest {
 
 message PeekResponse {
   bytes value = 1;
+  google.protobuf.Timestamp expiry = 2;
 }
 
 service GalaxyCache {
