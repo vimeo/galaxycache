@@ -65,6 +65,9 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 		includeSelf  bool
 		setClock     time.Time
 
+		getTTL, peekTTL             time.Duration
+		getTTLJitter, peekTTLJitter time.Duration
+
 		expiry time.Time
 
 		// getter for locally fetched values (may call t.Error/Errorf,
@@ -187,6 +190,132 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 					FetchMode: FetchModePeek,
 				},
 				expExpiry: baseTime.Add(time.Hour * 84),
+			},
+		},
+		expPeeks: map[string]int{
+			peer0Addr: 1,
+			peer1Addr: 1,
+			peer2Addr: 1,
+		},
+	}, {
+		name:         "peeks_hit_each_peer_with_expiry_capped_getTTL",
+		includePeers: []int{0, 1, 2},
+		includeSelf:  true,
+		setClock:     baseTime,
+		expiry:       baseTime.Add(time.Hour * 84),
+		getTTL:       time.Hour * 30,
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			t.Errorf("unexpected local fetch (peek should succeed on peer)")
+			return "", BackendGetInfo{}, fmt.Errorf("unexpected call")
+		},
+		peekModes: map[string]testPeekMode{
+			peer0Addr: testPeekModeHit,
+			peer1Addr: testPeekModeHit,
+			peer2Addr: testPeekModeHit,
+		},
+		checkSteps: []checkStep{
+			{
+				key:       chtest.FallthroughKey(self, peer0),
+				expVal:    peer0Addr + ": peek got: " + chtest.FallthroughKey(self, peer0),
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				// second fetch, since the key should now be in the main cache
+				key:    chtest.FallthroughKey(self, peer0),
+				expVal: peer0Addr + ": peek got: " + chtest.FallthroughKey(self, peer0),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:       chtest.FallthroughKey(self, peer1),
+				expVal:    peer1Addr + ": peek got: " + chtest.FallthroughKey(self, peer1),
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:    chtest.FallthroughKey(self, peer1),
+				expVal: peer1Addr + ": peek got: " + chtest.FallthroughKey(self, peer1),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:       chtest.FallthroughKey(self, peer2),
+				expVal:    peer2Addr + ": peek got: " + chtest.FallthroughKey(self, peer2),
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:    chtest.FallthroughKey(self, peer2),
+				expVal: peer2Addr + ": peek got: " + chtest.FallthroughKey(self, peer2),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+		},
+		expPeeks: map[string]int{
+			peer0Addr: 1,
+			peer1Addr: 1,
+			peer2Addr: 1,
+		},
+	}, {
+		name:         "peeks_hit_each_peer_with_expiry_capped_peekTTL",
+		includePeers: []int{0, 1, 2},
+		includeSelf:  true,
+		setClock:     baseTime,
+		expiry:       baseTime.Add(time.Hour * 84),
+		peekTTL:      time.Hour * 30,
+		localGetter: func(t testing.TB, key string) (string, BackendGetInfo, error) {
+			t.Errorf("unexpected local fetch (peek should succeed on peer)")
+			return "", BackendGetInfo{}, fmt.Errorf("unexpected call")
+		},
+		peekModes: map[string]testPeekMode{
+			peer0Addr: testPeekModeHit,
+			peer1Addr: testPeekModeHit,
+			peer2Addr: testPeekModeHit,
+		},
+		checkSteps: []checkStep{
+			{
+				key:       chtest.FallthroughKey(self, peer0),
+				expVal:    peer0Addr + ": peek got: " + chtest.FallthroughKey(self, peer0),
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				// second fetch, since the key should now be in the main cache
+				key:    chtest.FallthroughKey(self, peer0),
+				expVal: peer0Addr + ": peek got: " + chtest.FallthroughKey(self, peer0),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:       chtest.FallthroughKey(self, peer1),
+				expVal:    peer1Addr + ": peek got: " + chtest.FallthroughKey(self, peer1),
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:    chtest.FallthroughKey(self, peer1),
+				expVal: peer1Addr + ": peek got: " + chtest.FallthroughKey(self, peer1),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:       chtest.FallthroughKey(self, peer2),
+				expVal:    peer2Addr + ": peek got: " + chtest.FallthroughKey(self, peer2),
+				expExpiry: baseTime.Add(time.Hour * 30),
+			},
+			{
+				key:    chtest.FallthroughKey(self, peer2),
+				expVal: peer2Addr + ": peek got: " + chtest.FallthroughKey(self, peer2),
+				getOpts: GetOptions{
+					FetchMode: FetchModePeek,
+				},
+				expExpiry: baseTime.Add(time.Hour * 30),
 			},
 		},
 		expPeeks: map[string]int{
@@ -651,9 +780,12 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 
 			peekTimeout := time.Millisecond * 3
 			g := u.NewGalaxyWithBackendInfo("easy come; easy go", 256, getter, WithPreviousPeerPeeking(PeekPeerCfg{
-				WarmTime:    warmPeriod,
-				PeekTimeout: peekTimeout},
-			))
+				WarmTime:             warmPeriod,
+				PeekTimeout:          peekTimeout,
+				PeekedValueMaxTTL:    tbl.peekTTL,
+				PeekedValueTTLJitter: tbl.peekTTLJitter,
+			},
+			), WithGetTTL(tbl.getTTL, tbl.getTTLJitter))
 
 			fc.SetClock(tbl.setClock)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -687,7 +819,7 @@ func TestGalaxycacheGetWithPeek(t *testing.T) {
 					t.Errorf("unexpected error fetching step %d; key %q: %s", i, step.key, getErr)
 					continue
 				} else if !getInfo.Expiry.Equal(step.expExpiry) {
-					t.Errorf("unexpected expiry: %s; expected %s", getInfo.Expiry, step.expExpiry)
+					t.Errorf("step %d: unexpected expiry: %s; expected %s", i, getInfo.Expiry, step.expExpiry)
 				}
 				if string(c) != step.expVal {
 					t.Errorf("unexpected value for key %q in step %d\nwant: %q\n got %q", step.key, i, step.expVal, c)
