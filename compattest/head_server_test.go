@@ -109,7 +109,14 @@ func runPeer(ctx context.Context, t testing.TB, u *galaxycache.Universe, priL, s
 		Handler:  &mux,
 		ErrorLog: log.New(&prefixedTestLogWriter{t: t, prefix: "http: "}, cfg.SelfName+": ", log.Ltime|log.Ldate|log.Lmicroseconds),
 		ConnState: func(conn net.Conn, cs http.ConnState) {
-			t.Logf("%s: connection from %s to %s changed state to %s", cfg.SelfName, conn.RemoteAddr(), conn.LocalAddr(), cs)
+			// Try not to log if the context has already been canceled. (likely because the test finished)
+			// (logging after a test completes from another goroutine (intentionally) triggers the race detector)
+			// Checking the context _may_ provide a synchronization edge that avoids that issue.
+			select {
+			case <-ctx.Done():
+			default:
+				t.Logf("%s: connection from %s to %s changed state to %s", cfg.SelfName, conn.RemoteAddr(), conn.LocalAddr(), cs)
+			}
 		},
 	}
 
