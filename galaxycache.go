@@ -688,7 +688,7 @@ type GetOptions struct {
 type GetInfo struct {
 	// If non-zero, Expiry provides an expiration time after which
 	// Galaxycache should not return this value (and should ideally evict
-	// it from the cache to prevent unexpired, but more recently-outched
+	// it from the cache to prevent unexpired, but more recently-touched
 	// items from being evicted)
 	Expiry time.Time
 	// TODO: include information about hit-level, and/or backend fetches.

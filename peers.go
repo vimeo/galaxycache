@@ -51,7 +51,7 @@ type RemoteFetcher interface {
 
 // RemoteFetcherWithInfo is an extension of [RemoteFetcher], allowing
 // [RemoteFetcher] implementations to optionally provide [BackendGetInfo]. (the
-// zero-value is assumeed otherwise)
+// zero-value is assumed otherwise)
 type RemoteFetcherWithInfo interface {
 	RemoteFetcher
 
