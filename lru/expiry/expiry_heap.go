@@ -75,14 +75,25 @@ func (e *expiryHeap[T]) Swap(i, j int) {
 	e.ents[i], e.ents[j] = e.ents[j], e.ents[i]
 }
 
+// Push implements [heap.Interface], adding x to the end of the heap.
+// It is plumbing for [container/heap].
+//
+// Use [heap.Push] instead.
 func (e *expiryHeap[T]) Push(x any) {
 	xt := x.(expiryHeapEnt[T])
 	e.ents = append(e.ents, xt)
 	xt.updateLocation(len(e.ents) - 1)
 }
 
+// sentinelOffset is used to indicate that an entry is no longer present in the map.
+// It will be converted to an int, so it needs to be within the signed range to
+// have a directly comparable value.
 const sentinelOffset = math.MaxInt
 
+// Push implements [heap.Interface], removing and returning the entry at the end of the heap.
+// It is plumbing for [container/heap].
+//
+// Use [heap.Pop] instead.
 func (e *expiryHeap[T]) Pop() any {
 	v := e.ents[len(e.ents)-1]
 	e.ents = e.ents[:len(e.ents)-1]
@@ -90,7 +101,14 @@ func (e *expiryHeap[T]) Pop() any {
 	return v
 }
 
+// EntryHandle provides a handle for the resource in the heap to allow one to
+// remove entries later.
+//
+// Note: although a pointer to this struct is returned by [ExpiryTracker.Push],
+// it's expected that synchronization is handled by the caller.
 type EntryHandle[T any] struct {
+	// note: not atomic because the entire ExpiryTracker requires external
+	// synchronization anyway.
 	offset uint
 }
 
