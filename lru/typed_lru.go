@@ -1,4 +1,4 @@
-//go:build go1.18
+//go:build go1.24
 
 /*
 Copyright 2013 Google Inc.
@@ -20,6 +20,14 @@ limitations under the License.
 // Package lru implements an LRU cache.
 package lru // import "github.com/vimeo/galaxycache/lru"
 
+import (
+	"time"
+	"weak"
+
+	"github.com/vimeo/galaxycache/lru/expiry"
+	"github.com/vimeo/go-clocks"
+)
+
 // TypedCache is an LRU cache. It is not safe for concurrent access.
 type TypedCache[K comparable, V any] struct {
 	// MaxEntries is the maximum number of cache entries before
@@ -30,16 +38,25 @@ type TypedCache[K comparable, V any] struct {
 	// executed when an typedEntry is purged from the cache.
 	OnEvicted func(key K, value V)
 
+	// clock against which to check for item expiry
+	Clock clocks.Clock
+
 	// cache comes first so the GC enqueues marking the map-contents first
 	// (which will mark the contents of the linked-list much more
 	// efficiently than traversing the linked-list directly)
 	cache map[K]*llElem[typedEntry[K, V]]
 	ll    linkedList[typedEntry[K, V]]
+
+	expirations expiry.ExpiryTracker[weak.Pointer[llElem[typedEntry[K, V]]]]
+	expiryBase  time.Time
 }
 
 type typedEntry[K comparable, V any] struct {
-	key   K
-	value V
+	key       K
+	value     V
+	expiry    time.Duration // relative to expiryBase on TypedCache
+	hasExpiry bool
+	expHandle *expiry.EntryHandle[weak.Pointer[llElem[typedEntry[K, V]]]]
 }
 
 // TypedNew creates a new Cache (with types).
@@ -51,50 +68,15 @@ func TypedNew[K comparable, V any](maxEntries int) *TypedCache[K, V] {
 		cache:      make(map[K]*llElem[typedEntry[K, V]]),
 	}
 }
-
-// Add adds a value to the cache.
-func (c *TypedCache[K, V]) Add(key K, value V) {
-	if c.cache == nil {
-		c.cache = make(map[K]*llElem[typedEntry[K, V]])
+func (c *TypedCache[K, V]) now() time.Time {
+	if c.Clock == nil {
+		return time.Now()
 	}
-	if ele, hit := c.cache[key]; hit {
-		c.ll.MoveToFront(ele)
-		ele.value.value = value
-		return
-	}
-	ele := c.ll.PushFront(typedEntry[K, V]{key, value})
-	c.cache[key] = ele
-	if c.MaxEntries != 0 && c.ll.Len() > c.MaxEntries {
-		c.RemoveOldest()
-	}
+	return c.Clock.Now()
 }
 
-// Get looks up a key's value from the cache.
-func (c *TypedCache[K, V]) Get(key K) (value V, ok bool) {
-	if c.cache == nil {
-		return
-	}
-	if ele, hit := c.cache[key]; hit {
-		c.ll.MoveToFront(ele)
-		return ele.value.value, true
-	}
-	return
-}
-
-// MostRecent returns the most recently used element
-func (c *TypedCache[K, V]) MostRecent() *V {
-	if c.Len() == 0 {
-		return nil
-	}
-	return &c.ll.Front().value.value
-}
-
-// LeastRecent returns the least recently used element
-func (c *TypedCache[K, V]) LeastRecent() *V {
-	if c.Len() == 0 {
-		return nil
-	}
-	return &c.ll.Back().value.value
+func (c *TypedCache[K, V]) nowBase() time.Duration {
+	return c.now().Sub(c.expiryBase)
 }
 
 // Remove removes the provided key from the cache.
@@ -102,9 +84,112 @@ func (c *TypedCache[K, V]) Remove(key K) {
 	if c.cache == nil {
 		return
 	}
+	c.removeExpired()
 	if ele, hit := c.cache[key]; hit {
 		c.removeElement(ele)
 	}
+}
+
+func (c *TypedCache[K, V]) removeExpired() {
+	if c.cache == nil {
+		return
+	}
+	for candidate := range c.expirations.PopAllExpired(c.now()) {
+		ele := candidate.Value()
+		if ele == nil {
+			continue
+		}
+		c.removeElement(ele)
+	}
+}
+
+// Add adds a value to the cache.
+func (c *TypedCache[K, V]) Add(key K, value V) {
+	c.AddExpiring(key, value, time.Time{})
+}
+
+// AddExpiring provides the ability to insert an entry that expires at the timestamp [expiration]
+func (c *TypedCache[K, V]) AddExpiring(key K, value V, expiration time.Time) {
+	if c.cache == nil {
+		c.cache = make(map[K]*llElem[typedEntry[K, V]])
+	} else {
+		c.removeExpired()
+	}
+	if c.expiryBase.IsZero() {
+		c.expiryBase = expiration
+	}
+	if ele, hit := c.cache[key]; hit {
+		c.ll.MoveToFront(ele)
+		ele.value.value = value
+		if !expiration.IsZero() {
+			ele.value.expHandle = c.expirations.Push(expiration, weak.Make(ele))
+		}
+		return
+	}
+	ele := c.ll.PushFront(typedEntry[K, V]{key, value, expiration.Sub(c.expiryBase), !expiration.IsZero(), nil})
+	c.cache[key] = ele
+	if !expiration.IsZero() {
+		ele.value.expHandle = c.expirations.Push(expiration, weak.Make(ele))
+	}
+	if c.MaxEntries != 0 && c.ll.Len() > c.MaxEntries {
+		c.RemoveOldest()
+	}
+}
+
+// Get looks up a key's value from the cache.
+func (c *TypedCache[K, V]) Get(key K) (value V, ok bool) {
+	value, _, ok = c.GetWithExpiry(key)
+	return
+}
+
+// GetWithExpiry looks up a key's value from the cache.
+func (c *TypedCache[K, V]) GetWithExpiry(key K) (value V, exp time.Time, ok bool) {
+	if c.cache == nil {
+		return
+	}
+	if ele, hit := c.cache[key]; hit {
+		if ele.value.hasExpiry {
+			if ele.value.expiry <= c.nowBase() {
+				// It's here, but it expired. Remove it and reap the
+				// other expired entries while we're at it
+				c.removeElement(ele)
+				c.removeExpired()
+				return
+			}
+			exp = c.expiryBase.Add(ele.value.expiry)
+		}
+		c.ll.MoveToFront(ele)
+		return ele.value.value, exp, true
+	}
+	return
+}
+
+// MostRecent returns the most recently used element
+func (c *TypedCache[K, V]) MostRecent() *V {
+	for c.Len() > 0 {
+		ele := c.ll.Front()
+		if ele.value.hasExpiry && ele.value.expiry <= c.nowBase() {
+			c.removeElement(ele)
+			c.removeExpired()
+			continue
+		}
+		return &ele.value.value
+	}
+	return nil
+}
+
+// LeastRecent returns the least recently used element
+func (c *TypedCache[K, V]) LeastRecent() *V {
+	for c.Len() > 0 {
+		ele := c.ll.Back()
+		if ele.value.hasExpiry && ele.value.expiry <= c.nowBase() {
+			c.removeElement(ele)
+			c.removeExpired()
+			continue
+		}
+		return &ele.value.value
+	}
+	return nil
 }
 
 // RemoveOldest removes the oldest item from the cache.
@@ -112,6 +197,7 @@ func (c *TypedCache[K, V]) RemoveOldest() {
 	if c.cache == nil {
 		return
 	}
+	c.removeExpired()
 	ele := c.ll.Back()
 	if ele != nil {
 		c.removeElement(ele)
@@ -119,14 +205,23 @@ func (c *TypedCache[K, V]) RemoveOldest() {
 }
 
 func (c *TypedCache[K, V]) removeElement(e *llElem[typedEntry[K, V]]) {
-	c.ll.Remove(e)
 	kv := e.value
+	if _, ok := c.cache[kv.key]; !ok {
+		// This entry's been removed already (it might have expired
+		// _much_ later than it was removed for another reason).
+		return
+	}
+	c.ll.Remove(e)
 	// Wait until after we've removed the element from the linked list
 	// before removing from the map so we can leverage weak pointers in
 	// the linked list/LRU stack.
 	delete(c.cache, kv.key)
 	if c.OnEvicted != nil {
 		c.OnEvicted(kv.key, kv.value)
+	}
+	// Remove the element from the expiry heap
+	if e.value.hasExpiry {
+		c.expirations.Remove(e.value.expHandle)
 	}
 }
 

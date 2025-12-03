@@ -20,6 +20,7 @@ package galaxycache
 
 import (
 	"sync"
+	"time"
 
 	"github.com/vimeo/galaxycache/lru"
 )
@@ -77,19 +78,19 @@ func (c *cache) setLRUOnEvicted(f func(key string, kStats *keyStats)) {
 	}
 }
 
-func (c *cache) get(key string) (valWithStat, bool) {
+func (c *cache) get(key string) (valWithStat, time.Time, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nget++
 	if c.lru == nil {
-		return valWithStat{}, false
+		return valWithStat{}, time.Time{}, false
 	}
-	vi, ok := c.lru.Get(key)
+	vi, exp, ok := c.lru.GetWithExpiry(key)
 	if !ok {
-		return valWithStat{}, false
+		return valWithStat{}, time.Time{}, false
 	}
 	c.nhit++
-	return vi, true
+	return vi, exp, true
 }
 
 func (c *cache) mostRecent() *valWithStat {

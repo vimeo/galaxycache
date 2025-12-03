@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // serviceImpl implements the GalaxyCacheServer
@@ -55,15 +56,19 @@ func (gp *serviceImpl) GetFromPeer(ctx context.Context, req *pb.GetRequest) (*pb
 	galaxy.Stats.ServerRequests.Add(1) // keep track of the num of req
 
 	var value unsafeByteCodec
-	_, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModeNoPeerBackend}, string(req.GetKey()), &value)
+	getInfo, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModeNoPeerBackend}, string(req.GetKey()), &value)
 	if err != nil {
 		if nfErr := gc.NotFoundErr(nil); errors.As(err, &nfErr) {
 			return nil, status.Errorf(codes.NotFound, "not found: [%s]: %v", req, err)
 		}
 		return nil, status.Errorf(status.Code(err), "Failed to retrieve [%s]: %v", req, err)
 	}
+	ret := pb.GetResponse_builder{Value: value}.Build()
+	if !getInfo.Expiry.IsZero() {
+		ret.SetExpiry(timestamppb.New(getInfo.Expiry))
+	}
 
-	return pb.GetResponse_builder{Value: value}.Build(), nil
+	return ret, nil
 }
 
 // GetFromPeer implements the generated GalaxyCacheServer
@@ -78,7 +83,7 @@ func (gp *serviceImpl) PeekPeer(ctx context.Context, req *pb.PeekRequest) (*pb.P
 	galaxy.Stats.ServerRequests.Add(1) // keep track of the num of req
 
 	var value unsafeByteCodec
-	_, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModePeek}, string(req.GetKey()), &value)
+	getInfo, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModePeek}, string(req.GetKey()), &value)
 	if err != nil {
 		if nfErr := gc.NotFoundErr(nil); errors.As(err, &nfErr) {
 			return nil, status.Errorf(codes.NotFound, "not found: [%s]: %v", req, err)
@@ -86,5 +91,9 @@ func (gp *serviceImpl) PeekPeer(ctx context.Context, req *pb.PeekRequest) (*pb.P
 		return nil, status.Errorf(status.Code(err), "Failed to retrieve [%s]: %v", req, err) // not clear what this would be
 	}
 
-	return pb.PeekResponse_builder{Value: value}.Build(), nil
+	ret := pb.PeekResponse_builder{Value: value}.Build()
+	if !getInfo.Expiry.IsZero() {
+		ret.SetExpiry(timestamppb.New(getInfo.Expiry))
+	}
+	return ret, nil
 }

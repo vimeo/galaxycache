@@ -65,6 +65,7 @@ func TestFetchModeCompat(t *testing.T) {
 		hydMode        peercfg.GalaxyHandlerMode
 		prefixSelfName bool
 		echoKey        bool
+		keyExpiry      time.Time
 
 		enablePeek bool
 	}
@@ -79,6 +80,7 @@ func TestFetchModeCompat(t *testing.T) {
 		expVal      string // ignored if one of the below is set
 		expNotFound bool
 		expErr      bool
+		expiry      time.Time
 	}
 
 	v12WorkerPath := filepath.Join(t.TempDir(), "peerv1.2")
@@ -91,6 +93,8 @@ func TestFetchModeCompat(t *testing.T) {
 			t.Fatalf("failed to build v1.2 peer")
 		}
 	}
+
+	baseTime := time.Now()
 
 	for _, tbl := range []struct {
 		name string
@@ -184,6 +188,7 @@ func TestFetchModeCompat(t *testing.T) {
 					prefixSelfName: true,
 					echoKey:        true,
 					enablePeek:     false,
+					keyExpiry:      baseTime.Add(time.Hour * 31),
 				},
 			},
 			headFetchKeys: []fetchKeyExp{
@@ -195,6 +200,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-0: " + chtest.SingleOwnerKey("head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 31),
 				},
 				{
 					headHostIdx: 0,
@@ -204,6 +210,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "v1.2-0: " + chtest.FallthroughKey("v1.2-0", "head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      time.Time{},
 				},
 				{
 					headHostIdx: 0,
@@ -213,6 +220,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "v1.2-0: " + chtest.FallthroughKey("v1.2-0", "head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      time.Time{},
 				},
 			},
 			galaxyName: "fizzlebat",
@@ -230,6 +238,7 @@ func TestFetchModeCompat(t *testing.T) {
 					prefixSelfName: true,
 					echoKey:        true,
 					enablePeek:     false,
+					keyExpiry:      baseTime.Add(time.Hour * 37),
 				},
 				{
 					fetchProto:     peercfg.FetchGRPC,
@@ -240,6 +249,7 @@ func TestFetchModeCompat(t *testing.T) {
 					prefixSelfName: true,
 					echoKey:        true,
 					enablePeek:     false,
+					keyExpiry:      baseTime.Add(time.Hour * 34),
 				},
 				{
 					fetchProto:     peercfg.FetchGRPC,
@@ -250,6 +260,7 @@ func TestFetchModeCompat(t *testing.T) {
 					prefixSelfName: true,
 					echoKey:        true,
 					enablePeek:     false,
+					keyExpiry:      baseTime.Add(time.Hour * 31),
 				},
 			},
 			headFetchKeys: []fetchKeyExp{
@@ -261,6 +272,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "", // ignored
 					expNotFound: true,
 					expErr:      false,
+					expiry:      time.Time{},
 				},
 				{
 					headHostIdx: 0,
@@ -270,6 +282,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-0: " + chtest.FallthroughKey("head-0", "head-1") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 37),
 				},
 				{
 					headHostIdx: 0,
@@ -279,6 +292,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-0: " + chtest.FallthroughKey("head-0", "head-1") + ": {some value}", // already cached
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 37),
 				},
 				{
 					headHostIdx: 1,
@@ -288,6 +302,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-0: " + chtest.SingleOwnerKey("head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 37),
 				},
 				{
 					headHostIdx: 1,
@@ -297,6 +312,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-2: " + chtest.FallthroughKey("head-2", "head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 31),
 				},
 				{
 					headHostIdx: 1,
@@ -306,6 +322,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-0: " + chtest.FallthroughKey("head-1", "head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 37),
 				},
 				{
 					headHostIdx: 1,
@@ -315,6 +332,7 @@ func TestFetchModeCompat(t *testing.T) {
 					expVal:      "head-0: " + chtest.FallthroughKey("head-1", "head-0") + ": {some value}",
 					expNotFound: false,
 					expErr:      false,
+					expiry:      baseTime.Add(time.Hour * 37),
 				},
 			},
 			galaxyName: "fizzlebat",
@@ -1034,7 +1052,8 @@ func TestFetchModeCompat(t *testing.T) {
 						Bytes:          pInfo.opts.galaxySize,
 						HydrationMode:  pInfo.opts.hydMode,
 						// peek isn't implemented for v1.2 peers (but it'll be ignored there anyway)
-						Peek: peek,
+						Peek:   peek,
+						Expiry: pInfo.opts.keyExpiry,
 					}},
 				}
 			}
@@ -1121,8 +1140,12 @@ func TestFetchModeCompat(t *testing.T) {
 
 				g := ugs.gs[0]
 				sc := galaxycache.StringCodec("")
-				_, getErr := g.GetWithOptions(ctx, fk.getOpts, fk.key, &sc)
+				bgInfo, getErr := g.GetWithOptions(ctx, fk.getOpts, fk.key, &sc)
 				ugs.u.SetIncludeSelf(origIncSelf) // restore the IncludeSelf value
+
+				if !bgInfo.Expiry.Equal(fk.expiry) {
+					t.Errorf("key idx %d: unexpected expiry: %s; expected %s", i, bgInfo.Expiry, fk.expiry)
+				}
 
 				nfErr := (galaxycache.NotFoundErr)(nil)
 				isNotFound := errors.As(getErr, &nfErr)

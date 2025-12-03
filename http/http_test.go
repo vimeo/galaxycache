@@ -55,10 +55,12 @@ func TestHTTPHandler(t *testing.T) {
 	for _, tbl := range []struct {
 		name       string
 		enablePeek bool
+		setExpiry  bool
 	}{
-		{name: "peerFetchTest", enablePeek: false},
-		{name: "peerFetchTestWithSlash/foobar", enablePeek: false},
-		{name: "peerFetchWithPeek", enablePeek: true},
+		{name: "peerFetchTest", enablePeek: false, setExpiry: false},
+		{name: "peerFetchTestWithSlash/foobar", enablePeek: false, setExpiry: false},
+		{name: "peerFetchWithPeek", enablePeek: true, setExpiry: false},
+		{name: "peerFetchWithExpiry", enablePeek: true, setExpiry: true},
 	} {
 		t.Run(tbl.name, func(t *testing.T) {
 
@@ -127,6 +129,11 @@ func TestHTTPHandler(t *testing.T) {
 
 			preSeedReady := atomic.Bool{}
 
+			expTime := time.Time{}
+			if tbl.setExpiry {
+				expTime = time.Now().Add(time.Hour * 24)
+			}
+
 			gs := make([]*gc.Galaxy, 0, len(peerListeners))
 			wg.Add(len(peerListeners))
 			for i, listener := range peerListeners {
@@ -135,15 +142,19 @@ func TestHTTPHandler(t *testing.T) {
 					makeHTTPServerUniverse(ctx, testUniverseSrvParams{t: t, hn: peerIDs[i], gCh: gCh, galaxyName: tbl.name,
 						enablePeek: tbl.enablePeek, peers: peerAddresses, listener: listener,
 						hashOpts:         hashOpts,
-						prefixValPreseed: &preSeedReady})
+						prefixValPreseed: &preSeedReady,
+						setExpiry:        expTime,
+					})
 				}()
 				gs = append(gs, <-gCh)
 			}
 
 			for key := range testKeys(nGets, testKeyTweaks{}) {
 				var value gc.StringCodec
-				if err := g.Get(ctx, key, &value); err != nil {
+				if getInfo, err := g.GetWithOptions(ctx, gc.GetOptions{}, key, &value); err != nil {
 					t.Fatal(err)
+				} else if !getInfo.Expiry.Equal(expTime) {
+					t.Errorf("unexpected expiry: %s; expected %s", getInfo.Expiry, expTime)
 				}
 				if suffix := ":" + key; !strings.HasSuffix(string(value), suffix) {
 					t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
@@ -154,8 +165,10 @@ func TestHTTPHandler(t *testing.T) {
 			// handling those characters properly
 			for key := range testKeys(nGets, testKeyTweaks{joinCopies: 2, joinSep: "/"}) {
 				var value gc.StringCodec
-				if err := g.Get(ctx, key, &value); err != nil {
+				if getInfo, err := g.GetWithOptions(ctx, gc.GetOptions{}, key, &value); err != nil {
 					t.Fatal(err)
+				} else if !getInfo.Expiry.Equal(expTime) {
+					t.Errorf("unexpected expiry: %s; expected %s", getInfo.Expiry, expTime)
 				}
 				if suffix := ":" + key; !strings.HasSuffix(string(value), suffix) {
 					t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
@@ -182,8 +195,10 @@ func TestHTTPHandler(t *testing.T) {
 					priKeyOwner := peerIDs[(i+1)%len(peerIDs)]
 					key := chtest.FallthroughKey(priKeyOwner, gName)
 					var value gc.StringCodec
-					if _, err := og.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModeNoPeerBackend}, key, &value); err != nil {
+					if getInfo, err := og.GetWithOptions(ctx, gc.GetOptions{FetchMode: gc.FetchModeNoPeerBackend}, key, &value); err != nil {
 						t.Fatal(err)
+					} else if !getInfo.Expiry.Equal(expTime) {
+						t.Errorf("unexpected expiry: %s; expected %s", getInfo.Expiry, expTime)
 					}
 					peekKeyValPrefixes[key] = "pre-seed:" + gName
 				}
@@ -193,8 +208,10 @@ func TestHTTPHandler(t *testing.T) {
 				// one more time ... this time with keys that should have been seeded on all instances
 				for key := range peekKeyValPrefixes {
 					var value gc.StringCodec
-					if err := g.Get(ctx, key, &value); err != nil {
+					if getInfo, err := g.GetWithOptions(ctx, gc.GetOptions{}, key, &value); err != nil {
 						t.Fatal(err)
+					} else if !getInfo.Expiry.Equal(expTime) {
+						t.Errorf("unexpected expiry: %s; expected %s", getInfo.Expiry, expTime)
 					}
 					if !strings.HasPrefix(string(value), "pre-seed:") {
 						t.Errorf("Get(%q) = %q, want value starting in %q", key, value, "pre-seed")
@@ -219,6 +236,7 @@ type testUniverseSrvParams struct {
 	enablePeek bool
 	peers      []gc.Peer
 	listener   net.Listener
+	setExpiry  time.Time
 
 	hashOpts gc.HashOptions
 
@@ -236,16 +254,16 @@ func makeHTTPServerUniverse(ctx context.Context, p testUniverseSrvParams) {
 	if err != nil {
 		p.t.Errorf("Error setting peers: %s", err)
 	}
-	getter := gc.GetterFunc(func(ctx context.Context, key string, dest gc.Codec) error {
+	getter := gc.GetterFuncWithInfo(func(ctx context.Context, key string, dest gc.Codec) (gc.BackendGetInfo, error) {
 		if strings.HasPrefix(key, testNotFoundKeyPrefix) {
-			return gc.TrivialNotFoundErr{}
+			return gc.BackendGetInfo{}, gc.TrivialNotFoundErr{}
 		}
 		preSeedPfx := ""
 		if p.prefixValPreseed.Load() {
 			preSeedPfx = "pre-seed"
 		}
 		dest.UnmarshalBinary([]byte(preSeedPfx + ":" + key))
-		return nil
+		return gc.BackendGetInfo{Expiration: p.setExpiry}, nil
 	})
 	gOpts := []gc.GalaxyOption{}
 	if p.enablePeek {
@@ -254,7 +272,7 @@ func makeHTTPServerUniverse(ctx context.Context, p testUniverseSrvParams) {
 			WarmTime:    time.Hour,
 		}))
 	}
-	p.gCh <- universe.NewGalaxy(p.galaxyName, 1<<20, getter, gOpts...)
+	p.gCh <- universe.NewGalaxyWithBackendInfo(p.galaxyName, 1<<20, getter, gOpts...)
 	newServer := http.Server{Handler: wrappedHandler}
 	go func() {
 		err := newServer.Serve(p.listener)

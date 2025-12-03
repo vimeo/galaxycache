@@ -23,8 +23,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,16 +52,20 @@ func initSetup() (*Universe, context.Context, chan string) {
 	return NewUniverse(&TestProtocol{TestFetchers: map[string]*TestFetcher{}}, "test"), context.TODO(), make(chan string)
 }
 
-func setupStringGalaxyTest(cacheFills *AtomicInt) (*Galaxy, context.Context, chan string) {
+func setupStringGalaxyTest(cacheFills *AtomicInt, clk clocks.Clock, ttl time.Duration) (*Galaxy, context.Context, chan string) {
 	universe, ctx, stringc := initSetup()
-	stringGalaxy := universe.NewGalaxy(stringGalaxyName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Codec) error {
+	stringGalaxy := universe.NewGalaxyWithBackendInfo(stringGalaxyName, cacheSize, GetterFuncWithInfo(func(_ context.Context, key string, dest Codec) (BackendGetInfo, error) {
 		if key == fromChan {
 			key = <-stringc
 		}
 		cacheFills.Add(1)
 		str := "ECHO:" + key
-		return dest.UnmarshalBinary([]byte(str))
-	}))
+		expiration := time.Time{}
+		if ttl > 0 {
+			expiration = clk.Now().Add(ttl)
+		}
+		return BackendGetInfo{Expiration: expiration}, dest.UnmarshalBinary([]byte(str))
+	}), WithClock(clk))
 	return stringGalaxy, ctx, stringc
 }
 
@@ -67,7 +73,7 @@ func setupStringGalaxyTest(cacheFills *AtomicInt) (*Galaxy, context.Context, cha
 // outstanding callers
 func TestGetDupSuppress(t *testing.T) {
 	var cacheFills AtomicInt
-	stringGalaxy, ctx, stringc := setupStringGalaxyTest(&cacheFills)
+	stringGalaxy, ctx, stringc := setupStringGalaxyTest(&cacheFills, clocks.DefaultClock(), 0)
 	// Start two BackendGetters. The first should block (waiting reading
 	// from stringc) and the second should latch on to the first
 	// one.
@@ -88,6 +94,7 @@ func TestGetDupSuppress(t *testing.T) {
 	// TODO(bradfitz): decide whether there are any non-offensive
 	// debug/test hooks that could be added to singleflight to
 	// make a sleep here unnecessary.
+	// (this should be able to use testing/synctest after we upgrade to go 1.25)
 	time.Sleep(250 * time.Millisecond)
 
 	// Unblock the first getter, which should unblock the second
@@ -113,8 +120,9 @@ func countFills(f func(), cacheFills *AtomicInt) int64 {
 }
 
 func TestCaching(t *testing.T) {
+	t.Parallel()
 	var cacheFills AtomicInt
-	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills)
+	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, clocks.DefaultClock(), 0)
 	fills := countFills(func() {
 		for i := 0; i < 10; i++ {
 			var s StringCodec
@@ -128,9 +136,35 @@ func TestCaching(t *testing.T) {
 	}
 }
 
+func TestCachingWithExpiry(t *testing.T) {
+	t.Parallel()
+	var cacheFills AtomicInt
+	fc := fake.NewClock(time.Now())
+	// we'll set the ttl 1 minute in the future and advance by 31s per-iteration, so we get 5 fetches
+	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, fc, time.Minute)
+	possibleExpiries := map[time.Time]struct{}{}
+	fills := countFills(func() {
+		for range 10 {
+			possibleExpiries[fc.Now().Add(time.Minute)] = struct{}{}
+			var s StringCodec
+			if info, err := stringGalaxy.GetWithOptions(ctx, GetOptions{}, "TestCaching-key", &s); err != nil {
+				t.Fatal(err)
+			} else if _, availExp := possibleExpiries[info.Expiry]; !availExp {
+				t.Errorf("unexpected expiry: %s; expected one of: %v", info.Expiry, slices.Collect(maps.Keys(possibleExpiries)))
+			} else if info.Expiry.Sub(fc.Now()) < 0 {
+				t.Errorf("received expired item: current time %s; got %s", fc.Now(), info.Expiry)
+			}
+			fc.Advance(time.Second * 31)
+		}
+	}, &cacheFills)
+	if fills != 5 {
+		t.Errorf("expected 5 cache fill; got %d", fills)
+	}
+}
+
 func TestCacheEviction(t *testing.T) {
 	var cacheFills AtomicInt
-	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills)
+	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, clocks.DefaultClock(), 0)
 	testKey := "TestCacheEviction-key"
 	getTestKey := func() {
 		var res StringCodec
@@ -176,6 +210,8 @@ type TestProtocol struct {
 	fetchModes   map[string]testFetchMode
 	mu           sync.Mutex
 
+	keyExpiration time.Time
+
 	// If true, configure TestFetchers to prefix returned values with the hostname/URI as a prefix
 	hostInVal bool
 
@@ -205,14 +241,15 @@ const (
 )
 
 type TestFetcher struct {
-	hits       int
-	peeks      int
-	fail       bool
-	fetchMode  testFetchMode
-	peekMode   testPeekMode
-	uri        string
-	hostPrefix string // optionally include the fetcher's URI as a prefix in the result
-	clk        clocks.Clock
+	hits          int
+	peeks         int
+	fail          bool
+	fetchMode     testFetchMode
+	peekMode      testPeekMode
+	uri           string
+	hostPrefix    string // optionally include the fetcher's URI as a prefix in the result
+	clk           clocks.Clock
+	keyExpiration time.Time
 
 	t testing.TB
 }
@@ -222,44 +259,53 @@ func (fetcher *TestFetcher) Close() error {
 }
 
 func (fetcher *TestFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := fetcher.FetchWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+func (fetcher *TestFetcher) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
 	// TODO: switch existing tests over to use fetchMode
 	if fetcher.fail {
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	}
 	switch fetcher.fetchMode {
 	case testFetchModeFail:
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testFetchModeFailTest:
 		fetcher.t.Errorf("unexpected fetch on host %q with key %q", fetcher.hostPrefix, key)
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testFetchModeMiss:
-		return nil, TrivialNotFoundErr{}
+		return nil, BackendGetInfo{}, TrivialNotFoundErr{}
 	case testFetchModeHit:
 		fetcher.hits++
-		return []byte(fetcher.hostPrefix + "got:" + key), nil
+		return []byte(fetcher.hostPrefix + "got:" + key), BackendGetInfo{fetcher.keyExpiration}, nil
 	default:
 		panic("unknown mode: %s")
 	}
 }
-
 func (fetcher *TestFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := fetcher.PeekWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+func (fetcher *TestFetcher) PeekWithInfo(ctx context.Context, galaxy string, key string) ([]byte, BackendGetInfo, error) {
 	switch fetcher.peekMode {
 	case testPeekModeFail:
 		fetcher.peeks++
-		return nil, errors.New("simulated error from peer")
+		return nil, BackendGetInfo{}, errors.New("simulated error from peer")
 	case testPeekModeHit:
 		fetcher.peeks++
-		return []byte(fetcher.hostPrefix + "peek got: " + key), nil
+		return []byte(fetcher.hostPrefix + "peek got: " + key), BackendGetInfo{fetcher.keyExpiration}, nil
 	case testPeekModeMiss:
 		fetcher.peeks++
-		return nil, TrivialNotFoundErr{}
+		return nil, BackendGetInfo{}, TrivialNotFoundErr{}
 	case testPeekModeStallCtx:
 		// sleep for a day (or until the context expires)
 		// This ctx should come from the fake clock anyway, so we
 		// really only need the signal that we're sleeping to make it
 		// back to the outer test.
 		fetcher.clk.SleepFor(ctx, time.Hour*24)
-		return nil, ctx.Err()
+		return nil, BackendGetInfo{fetcher.keyExpiration}, ctx.Err()
 	default:
 		panic("unknown peek mode " + strconv.Itoa(int(fetcher.peekMode)))
 	}
@@ -277,14 +323,15 @@ func (proto *TestProtocol) NewFetcher(url string) (RemoteFetcher, error) {
 		}
 	}
 	newTestFetcher := &TestFetcher{
-		hits:       0,
-		fail:       false,
-		fetchMode:  fm,
-		peekMode:   testPeekModeMiss,
-		uri:        url,
-		hostPrefix: hostPfx,
-		clk:        proto.clk,
-		t:          proto.t,
+		hits:          0,
+		fail:          false,
+		fetchMode:     fm,
+		peekMode:      testPeekModeMiss,
+		uri:           url,
+		hostPrefix:    hostPfx,
+		clk:           proto.clk,
+		t:             proto.t,
+		keyExpiration: proto.keyExpiration,
 	}
 	proto.mu.Lock()
 	defer proto.mu.Unlock()
@@ -578,7 +625,7 @@ func TestHotcache(t *testing.T) {
 				dQPS: windowedAvgQPS{trackEpoch: relNow},
 			}
 			value := g.newValWithStat([]byte("hello"), kStats)
-			g.hotCache.add(keyToAdd, value)
+			g.hotCache.add(keyToAdd, value, time.Time{})
 
 			// blast the key in the hotcache with a bunch of hypothetical gets every few seconds
 			for k := 0; k < tc.numHeatBursts; k++ {
@@ -600,7 +647,7 @@ func TestHotcache(t *testing.T) {
 			}
 			value2 := g.newValWithStat([]byte("hello there"), nil)
 
-			g.hotCache.add(keyToAdd+"2", value2) // ensure that hcStats are properly updated after adding
+			g.hotCache.add(keyToAdd+"2", value2, time.Time{}) // ensure that hcStats are properly updated after adding
 			g.maybeUpdateHotCacheStats()
 			t.Logf("Hottest QPS: %f, Coldest QPS: %f\n", g.hcStatsWithTime.hcs.MostRecentQPS, g.hcStatsWithTime.hcs.LeastRecentQPS)
 
@@ -689,7 +736,7 @@ func TestPromotion(t *testing.T) {
 					t.Error("Found candidate in hotcache")
 				}
 				g.getFromPeer(ctx, tf, key)
-				val, okHot := g.hotCache.get(key)
+				val, _, okHot := g.hotCache.get(key)
 				if !okHot {
 					t.Errorf("key %q missing from hot cache", key)
 				}
@@ -768,7 +815,7 @@ func TestPromotion(t *testing.T) {
 			{
 				galaxy.Get(ctx, testKey, &sc)
 				_, okCandidate := galaxy.candidateCache.get(testKey)
-				value, okHot := galaxy.hotCache.get(testKey)
+				value, _, okHot := galaxy.hotCache.get(testKey)
 				tc.firstCheck(ctx, t, testKey, value, okCandidate, okHot, fetcher, galaxy)
 			}
 			if tc.secondCheck == nil {
@@ -777,7 +824,7 @@ func TestPromotion(t *testing.T) {
 			{
 				galaxy.Get(ctx, testKey, &sc)
 				_, okCandidate := galaxy.candidateCache.get(testKey)
-				value, okHot := galaxy.hotCache.get(testKey)
+				value, _, okHot := galaxy.hotCache.get(testKey)
 				tc.secondCheck(ctx, t, testKey, value, okCandidate, okHot, fetcher, galaxy)
 			}
 

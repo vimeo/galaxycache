@@ -72,6 +72,7 @@ type Galaxy struct {
 	PrefixSelfName bool
 	Bytes          uint64
 	HydrationMode  GalaxyHandlerMode
+	Expiry         time.Time
 
 	Peek *PeekConfig
 }

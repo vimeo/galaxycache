@@ -63,7 +63,7 @@ func NewGRPCFetchProtocol(dialOpts ...grpc.DialOption) *GRPCFetchProtocol {
 // GRPCFetchProtocol by constructing a new fetcher to fetch
 // from peers via GRPC
 func (gp *GRPCFetchProtocol) NewFetcher(address string) (gc.RemoteFetcher, error) {
-	conn, err := grpc.Dial(address, gp.PeerDialOptions...)
+	conn, err := grpc.NewClient(address, gp.PeerDialOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,14 @@ func (gp *GRPCFetchProtocol) NewFetcher(address string) (gc.RemoteFetcher, error
 	return &grpcFetcher{address: address, conn: conn, client: client}, nil
 }
 
+var _ gc.RemoteFetcherWithInfo = (*grpcFetcher)(nil)
+
 func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, error) {
+	bs, _, err := g.PeekWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+func (g *grpcFetcher) PeekWithInfo(ctx context.Context, galaxy, key string) ([]byte, gc.BackendGetInfo, error) {
 	span := trace.FromContext(ctx)
 	span.Annotatef(nil, "peeking from %s; connection state %s", g.address, g.conn.GetState())
 	resp, err := g.client.PeekPeer(ctx, pb.PeekRequest_builder{
@@ -81,18 +88,29 @@ func (g *grpcFetcher) Peek(ctx context.Context, galaxy, key string) ([]byte, err
 	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
-			return nil, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
 		default:
-			return nil, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+			return nil, gc.BackendGetInfo{}, status.Errorf(status.Code(err), "Failed to peek from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
 	}
+	bgInfo := gc.BackendGetInfo{}
+	if resp.HasExpiry() {
+		bgInfo.Expiration = resp.GetExpiry().AsTime()
+	}
 
-	return resp.GetValue(), nil
+	return resp.GetValue(), bgInfo, nil
 }
 
 // Fetch here implements the RemoteFetcher interface for
 // sending Gets to peers over an RPC connection
 func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := g.FetchWithInfo(ctx, galaxy, key)
+	return bs, err
+}
+
+// FetchWithInfo here implements the RemoteFetcher interface for
+// sending Gets to peers over an RPC connection
+func (g *grpcFetcher) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	span := trace.FromContext(ctx)
 	span.Annotatef(nil, "fetching from %s; connection state %s", g.address, g.conn.GetState())
 	resp, err := g.client.GetFromPeer(ctx, pb.GetRequest_builder{
@@ -102,13 +120,18 @@ func (g *grpcFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]b
 	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
-			return nil, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("%w: %w", gc.TrivialNotFoundErr{}, err)
 		default:
-			return nil, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
+			return nil, gc.BackendGetInfo{}, status.Errorf(status.Code(err), "Failed to fetch from peer over RPC [%q, %q]: %s", galaxy, g.address, err)
 		}
 	}
 
-	return resp.GetValue(), nil
+	bgInfo := gc.BackendGetInfo{}
+	if resp.HasExpiry() {
+		bgInfo.Expiration = resp.GetExpiry().AsTime()
+	}
+
+	return resp.GetValue(), bgInfo, nil
 }
 
 // Close here implements the RemoteFetcher interface for

@@ -222,7 +222,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var value gc.ByteCodec
-	_, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: fetchMode}, key, &value)
+	info, err := galaxy.GetWithOptions(ctx, gc.GetOptions{FetchMode: fetchMode}, key, &value)
 	if err != nil {
 		if nfErr := gc.NotFoundErr(nil); errors.As(err, &nfErr) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -231,10 +231,18 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if !info.Expiry.IsZero() {
+		w.Header().Set(expiresHeader, info.Expiry.UTC().Format(nanoHTTPTimeFormat))
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(value)
 }
 
+const expiresHeader = "Expires"
+
+// A copy of [http.TimeFormat] with nanosecond resolution configured.
+// (compatible with [http.TimeFormat])
+const nanoHTTPTimeFormat = "Mon, 02 Jan 2006 15:04:05.000000000 GMT"
 const galaxyPresentHeader = "X-Galaxycache-Galaxy-Status"
 
 const galaxyStatusFound = "Found"
@@ -246,18 +254,32 @@ type httpFetcher struct {
 	basePeekURL url.URL
 }
 
+var _ gc.RemoteFetcherWithInfo = (*httpFetcher)(nil)
+
 // Fetch here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
 func (h *httpFetcher) Fetch(ctx context.Context, galaxy string, key string) ([]byte, error) {
-	return h.fetch(ctx, false, galaxy, key)
+	bs, _, err := h.fetch(ctx, false, galaxy, key)
+	return bs, err
 }
 
 // Peek here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
 func (h *httpFetcher) Peek(ctx context.Context, galaxy string, key string) ([]byte, error) {
+	bs, _, err := h.fetch(ctx, true, galaxy, key)
+	return bs, err
+}
+
+// Fetch here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
+func (h *httpFetcher) FetchWithInfo(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
+	return h.fetch(ctx, false, galaxy, key)
+}
+
+// Peek here implements the RemoteFetcher interface for sending a GET request over HTTP to a peer
+func (h *httpFetcher) PeekWithInfo(ctx context.Context, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	return h.fetch(ctx, true, galaxy, key)
 }
 
 // fetch backs both Fetch and Peek
-func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key string) ([]byte, error) {
+func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key string) ([]byte, gc.BackendGetInfo, error) {
 	baseURL := h.baseURL
 	if peek {
 		baseURL = h.basePeekURL
@@ -272,7 +294,7 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 	}
 	res, err := h.transport.RoundTrip(req.WithContext(ctx))
 	if err != nil {
-		return nil, err
+		return nil, gc.BackendGetInfo{}, err
 	}
 	defer res.Body.Close()
 	// Unconditionally drain any unread bytes in the body so the connection is actually available for reuse.
@@ -282,25 +304,32 @@ func (h *httpFetcher) fetch(ctx context.Context, peek bool, galaxy string, key s
 	case http.StatusNotFound:
 		switch galaxyPresent := res.Header.Get(galaxyPresentHeader); galaxyPresent {
 		case galaxyStatusNotFound:
-			return nil, errors.New("galaxy not found")
+			return nil, gc.BackendGetInfo{}, errors.New("galaxy not found")
 		case galaxyStatusFound:
-			return nil, fmt.Errorf("key not found: %w", gc.TrivialNotFoundErr{})
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("key not found: %w", gc.TrivialNotFoundErr{})
 		default:
 			// anything else, including a missing header (either an
 			// older version of galaxycache, or the HTTP handler's
 			// not registered for that path)
-			return nil, fmt.Errorf("server returned HTTP response status code: %v; %q header: %q",
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("server returned HTTP response status code: %v; %q header: %q",
 				res.Status, galaxyPresentHeader, galaxyPresent)
 		}
 	case http.StatusOK:
 		data, err := io.ReadAll(res.Body)
 		if err != nil {
-			return nil, fmt.Errorf("reading response body: %v", err)
+			return nil, gc.BackendGetInfo{}, fmt.Errorf("reading response body: %v", err)
 		}
-		return data, nil
+		if expHeader := res.Header.Get(expiresHeader); expHeader != "" {
+			expTime, expParseErr := http.ParseTime(expHeader)
+			if expParseErr != nil {
+				return nil, gc.BackendGetInfo{}, fmt.Errorf("unable to parse Expires header: %w", expParseErr)
+			}
+			return data, gc.BackendGetInfo{Expiration: expTime}, nil
+		}
+		return data, gc.BackendGetInfo{}, nil
 	default:
 		data, _ := io.ReadAll(res.Body)
-		return nil, fmt.Errorf("server returned HTTP response status code: %v; body: %s", res.Status, string(data))
+		return nil, gc.BackendGetInfo{}, fmt.Errorf("server returned HTTP response status code: %v; body: %s", res.Status, string(data))
 	}
 }
 

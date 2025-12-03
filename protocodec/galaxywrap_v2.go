@@ -18,3 +18,14 @@ func GalaxyGet[C any, T pointerMessage[C]](ctx context.Context, g *galaxycache.G
 	}
 	return pc.msg, nil
 }
+
+// GalaxyGetWithInfo is a simple wrapper around a [galaxycache.Galaxy.GetWithOptions] method-call that takes
+// care of constructing the [protocodec.CodecV2], etc. (making the interface more idiomatic for Go)
+func GalaxyGetWithInfo[C any, T pointerMessage[C]](ctx context.Context, g *galaxycache.Galaxy, opts galaxycache.GetOptions, key string) (m T, info galaxycache.GetInfo, getErr error) {
+	pc := CodecV2[C, T]{}
+	info, getErr = g.GetWithOptions(ctx, opts, key, &pc)
+	if getErr != nil {
+		return // use named return values to bring the inlining cost down
+	}
+	return pc.msg, info, nil
+}

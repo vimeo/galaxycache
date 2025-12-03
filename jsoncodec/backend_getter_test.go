@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/vimeo/galaxycache"
 	"github.com/vimeo/galaxycache/jsoncodec"
@@ -98,6 +99,101 @@ func TestBackendGetterBad(t *testing.T) {
 		c := galaxycache.ByteCodec{}
 
 		if getErr := be.Get(ctx, "foobar", &c); getErr == nil {
+			t.Errorf("noop Get call didn't fail")
+		} else if !errors.Is(getErr, sentinel) {
+			t.Errorf("Error from Get did not wrap/equal sentinel")
+		}
+	}
+}
+
+// Test of common-good-case
+func TestBackendGetterWithInfoGood(t *testing.T) {
+	expiration := time.Now().Add(time.Hour)
+	beGood := func(ctx context.Context, key string) (testMessage, galaxycache.BackendGetInfo, error) {
+		return testMessage{
+			Name: "TestName",
+			City: "TestCity",
+		}, galaxycache.BackendGetInfo{Expiration: expiration}, nil
+	}
+
+	be := jsoncodec.BackendGetterWithInfo(beGood)
+
+	ctx := context.Background()
+
+	// test with a proto codec passed (local common-case)
+	{
+		pc := jsoncodec.Codec[testMessage]{}
+
+		if bgInfo, getErr := be.GetWithInfo(ctx, "foobar", &pc); getErr != nil {
+			t.Errorf("noop Get call failed: %s", getErr)
+		} else if !bgInfo.Expiration.Equal(expiration) {
+			t.Errorf("unexpected expiration: %s; wanted %s", bgInfo.Expiration, expiration)
+		}
+
+		pv := pc.Get()
+		if pv.City != "TestCity" {
+			t.Errorf("unexpected value for City: %v", pv.City)
+		}
+		if pv.Name != "TestName" {
+			t.Errorf("unexpected value for Name: %v", pv.Name)
+		}
+	}
+	// test with a ByteCodec to exercise the common-case when a remote-fetch is done
+	{
+		c := galaxycache.ByteCodec{}
+
+		if bgInfo, getErr := be.GetWithInfo(ctx, "foobar", &c); getErr != nil {
+			t.Errorf("noop Get call failed: %s", getErr)
+		} else if !bgInfo.Expiration.Equal(expiration) {
+			t.Errorf("unexpected expiration: %s; wanted %s", bgInfo.Expiration, expiration)
+		}
+
+		if len(c) < len("TestName")+len("TestCity") {
+			t.Errorf("marshaled bytes too short (less than sum of two string fields)")
+		}
+
+		pc := jsoncodec.Codec[testMessage]{}
+
+		if umErr := pc.UnmarshalBinary([]byte(c)); umErr != nil {
+			t.Errorf("failed to unmarshal bytes: %s", umErr)
+		}
+
+		pv := pc.Get()
+		if pv.City != "TestCity" {
+			t.Errorf("unexpected value for City: %v", pv.City)
+		}
+		if pv.Name != "TestName" {
+			t.Errorf("unexpected value for Name: %v", pv.Name)
+		}
+	}
+}
+
+func TestBackendGetterWithInfoBad(t *testing.T) {
+	sentinel := errors.New("sentinel error")
+
+	beErrorer := func(ctx context.Context, key string) (*testMessage, galaxycache.BackendGetInfo, error) {
+		return nil, galaxycache.BackendGetInfo{}, fmt.Errorf("error: %w", sentinel)
+	}
+
+	be := jsoncodec.BackendGetterWithInfo(beErrorer)
+
+	ctx := context.Background()
+
+	// test with a proto codec passed (local common-case)
+	{
+		pc := jsoncodec.Codec[testMessage]{}
+
+		if _, getErr := be.GetWithInfo(ctx, "foobar", &pc); getErr == nil {
+			t.Errorf("noop Get call didn't fail")
+		} else if !errors.Is(getErr, sentinel) {
+			t.Errorf("Error from Get did not wrap/equal sentinel")
+		}
+	}
+	// test with a ByteCodec to exercise the common-case when a remote-fetch is done
+	{
+		c := galaxycache.ByteCodec{}
+
+		if _, getErr := be.GetWithInfo(ctx, "foobar", &c); getErr == nil {
 			t.Errorf("noop Get call didn't fail")
 		} else if !errors.Is(getErr, sentinel) {
 			t.Errorf("Error from Get did not wrap/equal sentinel")
