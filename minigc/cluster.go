@@ -3,12 +3,26 @@ package minigc
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/vimeo/galaxycache/lru"
 	"github.com/vimeo/galaxycache/singleflight"
 )
 
-type ClusterHydrateCB[K comparable, V any] func(ctx context.Context, key K) (V, error)
+// ClusterHydrateInfo provides context around the returned value
+type ClusterHydrateInfo struct {
+	// Expiration is an absolute time after which this value is no longer
+	// valid and should not be returned.
+	// The zero-value means no-expiration.
+	Expiration time.Time
+}
+
+type ClusterHydrateCB[K comparable, V any] func(ctx context.Context, key K) (V, ClusterHydrateInfo, error)
+
+type flightGroupVal[V any] struct {
+	val     V
+	hydInfo ClusterHydrateInfo
+}
 
 // Cluster is an in-process cache intended for in-memory data
 // It's a thin wrapper around another cache implementation that takes care of
@@ -16,14 +30,14 @@ type ClusterHydrateCB[K comparable, V any] func(ctx context.Context, key K) (V, 
 // It leverages the singleflight package to handle cases where hydration can
 // fail and/or block.
 //
-// In contrast, StarSystem is designed for cases where constructing/hydrating/fetching a
+// In contrast, [StarSystem] is designed for cases where constructing/hydrating/fetching a
 // value is quick, can't fail, but not completely free. (It's a lighter-weight implementation)
 //
 // Note: the underlying cache implementation may change at any time.
 type Cluster[K comparable, V any] struct {
 	lru       lru.TypedCache[K, V]
 	hydrateCB ClusterHydrateCB[K, V]
-	sfG       singleflight.TypedGroup[K, V]
+	sfG       singleflight.TypedGroup[K, flightGroupVal[V]]
 	mu        sync.Mutex
 }
 
@@ -35,6 +49,8 @@ type ClusterParams[K comparable, V any] struct {
 	// OnEvicted optionally specificies a callback function to be
 	// executed when an typedEntry is purged from the cache.
 	OnEvicted func(key K, value V)
+
+	MaxTTL time.Duration
 }
 
 func NewCluster[K comparable, V any](cb ClusterHydrateCB[K, V], params ClusterParams[K, V]) *Cluster[K, V] {
@@ -47,34 +63,44 @@ func NewCluster[K comparable, V any](cb ClusterHydrateCB[K, V], params ClusterPa
 	}
 }
 
+// Remove deletes the specified key from the cache
 func (s *Cluster[K, V]) Remove(key K) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lru.Remove(key)
 }
 
-func (s *Cluster[K, V]) get(key K) (V, bool) {
+func (s *Cluster[K, V]) get(key K) (V, ClusterHydrateInfo, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if v, ok := s.lru.Get(key); ok {
-		return v, true
+	if v, exp, ok := s.lru.GetWithExpiry(key); ok {
+		return v, ClusterHydrateInfo{Expiration: exp}, true
 	}
 	var vz V
-	return vz, false
+	return vz, ClusterHydrateInfo{}, false
 }
 
-func (s *Cluster[K, V]) Get(ctx context.Context, key K) (V, error) {
-	return s.sfG.Do(key, func() (V, error) {
-		if v, ok := s.get(key); ok {
-			return v, nil
+// Get fetches the specified key from the cache, and calls the [ClusterHydrateCB] if not present.
+// Overlapping calls to Get for the same key will be singleflighted.
+func (s *Cluster[K, V]) Get(ctx context.Context, key K) (V, ClusterHydrateInfo, error) {
+	// Before involving singleflight, do a quick check for the key to
+	// reduce the cost of the uncontended case.
+	if v, hydInfo, ok := s.get(key); ok {
+		return v, hydInfo, nil
+	}
+
+	fgv, doErr := s.sfG.Do(key, func() (flightGroupVal[V], error) {
+		if v, hydInfo, ok := s.get(key); ok {
+			return flightGroupVal[V]{val: v, hydInfo: hydInfo}, nil
 		}
-		val, hydErr := s.hydrateCB(ctx, key)
+		val, hydInfo, hydErr := s.hydrateCB(ctx, key)
 		if hydErr != nil {
-			return val, hydErr
+			return flightGroupVal[V]{}, hydErr
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.lru.Add(key, val)
-		return val, nil
+		s.lru.AddExpiring(key, val, hydInfo.Expiration)
+		return flightGroupVal[V]{val: val, hydInfo: hydInfo}, nil
 	})
+	return fgv.val, fgv.hydInfo, doErr
 }
