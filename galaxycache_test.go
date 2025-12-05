@@ -69,6 +69,19 @@ func setupStringGalaxyTest(cacheFills *AtomicInt, clk clocks.Clock, ttl time.Dur
 	return stringGalaxy, ctx, stringc
 }
 
+func setupSimpleStringGalaxyTestWithOpts(cacheFills *AtomicInt, otherOpts ...GalaxyOption) (*Galaxy, context.Context, chan string) {
+	universe, ctx, stringc := initSetup()
+	stringGalaxy := universe.NewGalaxy(stringGalaxyName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Codec) error {
+		if key == fromChan {
+			key = <-stringc
+		}
+		cacheFills.Add(1)
+		str := "ECHO:" + key
+		return dest.UnmarshalBinary([]byte(str))
+	}), otherOpts...)
+	return stringGalaxy, ctx, stringc
+}
+
 // tests that a BackendGetter's Get method is only called once with two
 // outstanding callers
 func TestGetDupSuppress(t *testing.T) {
@@ -142,6 +155,33 @@ func TestCachingWithExpiry(t *testing.T) {
 	fc := fake.NewClock(time.Now())
 	// we'll set the ttl 1 minute in the future and advance by 31s per-iteration, so we get 5 fetches
 	stringGalaxy, ctx, _ := setupStringGalaxyTest(&cacheFills, fc, time.Minute)
+	possibleExpiries := map[time.Time]struct{}{}
+	fills := countFills(func() {
+		for range 10 {
+			possibleExpiries[fc.Now().Add(time.Minute)] = struct{}{}
+			var s StringCodec
+			if info, err := stringGalaxy.GetWithOptions(ctx, GetOptions{}, "TestCaching-key", &s); err != nil {
+				t.Fatal(err)
+			} else if _, availExp := possibleExpiries[info.Expiry]; !availExp {
+				t.Errorf("unexpected expiry: %s; expected one of: %v", info.Expiry, slices.Collect(maps.Keys(possibleExpiries)))
+			} else if info.Expiry.Sub(fc.Now()) < 0 {
+				t.Errorf("received expired item: current time %s; got %s", fc.Now(), info.Expiry)
+			}
+			fc.Advance(time.Second * 31)
+		}
+	}, &cacheFills)
+	if fills != 5 {
+		t.Errorf("expected 5 cache fill; got %d", fills)
+	}
+}
+
+func TestCachingWithAutoExpiryNoJitter(t *testing.T) {
+	t.Parallel()
+	var cacheFills AtomicInt
+	fc := fake.NewClock(time.Now())
+	// we'll set the ttl 1 minute in the future and advance by 31s per-iteration, so we get 5 fetches
+	stringGalaxy, ctx, _ := setupSimpleStringGalaxyTestWithOpts(&cacheFills, WithClock(fc), WithGetTTL(time.Minute, 0))
+	t.Logf("galaxy: %+v", stringGalaxy)
 	possibleExpiries := map[time.Time]struct{}{}
 	fills := countFills(func() {
 		for range 10 {

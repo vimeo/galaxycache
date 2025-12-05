@@ -1,11 +1,12 @@
 # galaxycache
 
-[![Build Status](https://travis-ci.org/vimeo/galaxycache.svg?branch=master)](https://travis-ci.org/vimeo/galaxycache)
+[![Build Status](https://github.com/vimeo/galaxycache/actions/workflows/go.yml/badge.svg)](https://github.com/vimeo/galaxycache/actions/workflows/go.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/vimeo/galaxycache.svg)](https://pkg.go.dev/github.com/vimeo/galaxycache)
 
-galaxycache is a caching and cache-filling library, adapted from groupcache, intended as a
+Galaxycache is a caching and cache-filling library, adapted from groupcache, intended as a
 replacement for memcached in many cases.
 
-For API docs and examples, see http://godoc.org/github.com/vimeo/galaxycache
+For API docs and examples, see https://pkg.go.dev/github.com/vimeo/galaxycache
 
 ## Quick Start
 
@@ -87,6 +88,10 @@ A [`Galaxy`] is a grouping of keys based on a category determined by the user. F
 
 Each [`Galaxy`] contains its own cache space. The cache is immutable; all cache population and eviction is handled by internal logic.
 
+### TTL/Expiry
+
+Values within a [`Galaxy`] may have an expiration time. This can either be returned directly by a BackendGetterWithInfo implementation, or set via the [`WithGetTTL`] option when constructing the [`Galaxy`].
+
 ### Maincache vs Hotcache
 
 The cache within each galaxy is divided into a "maincache" and a "hotcache".
@@ -164,4 +169,5 @@ Use the golang-nuts mailing list for any discussion or questions.
 [`RemoteFetcher`]:https://godoc.org/github.com/vimeo/galaxycache#RemoteFetcher
 [`BackendGetter`]:https://godoc.org/github.com/vimeo/galaxycache#BackendGetter
 [`ShouldPromote.Interface`]:https://godoc.org/github.com/vimeo/galaxycache/promoter#Interface
+[`WithGetTTL`]: https://pkg.go.dev/github.com/vimeo/galaxycache#WithGetTTL
 
