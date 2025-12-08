@@ -1,5 +1,6 @@
 /*
 Copyright 2012 Google Inc.
+Copyright 2019-2025 Vimeo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,12 +23,29 @@ limitations under the License.
 // or finally gets the data.  In the common case, many concurrent
 // cache misses across a set of peers for the same key result in just
 // one cache fill.
+//
+// In most cases, one will construct a [Universe] with [NewUniverse], and then
+// construct a [Galaxy] with [Universe.NewGalaxy].
+//
+// # Expiration/TTL
+//
+// [Galaxy] implementations support the concept of a value's expiration time.
+// This may either be set by providing an [BackendGetterWithInfo]
+// implementation to [Universe.NewGalaxyWithBackendInfo] which returns a
+// non-zero [BackendGetInfo].Expiration.
+//
+// Additionally, [Universe.NewGalaxy] and [Universe.NewGalaxyWithBackendInfo] may take
+// [WithGetTTL] and [WithPeekTTL] as arguments to provide default expiration-times.
+// [WithPeekTTL] only applies to values that are pulled from peers via
+// [RemoteFetcher].Peek and [RemoteFetcherWithInfo].PeekWithInfo
+// requests.
 package galaxycache // import "github.com/vimeo/galaxycache"
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"sync"
 	"time"
@@ -231,6 +249,14 @@ func (universe *Universe) NewGalaxyWithBackendInfo(name string, cacheBytes int64
 	for _, opt := range opts {
 		opt.apply(&gOpts)
 	}
+	if gOpts.peekTTL.entryMaxTTL == 0 {
+		// Default the peek TTL if the get TTL is unset
+		// most of the time you don't want the peek TTL to be set if
+		// the get TTL isn't, but, if the content of a galaxy
+		// changes/gets more info, it can be useful to bound how long
+		// data can bounce round without being re-hydrated anew.
+		gOpts.peekTTL = gOpts.getTTL
+	}
 	g := &Galaxy{
 		name:              name,
 		parent:            universe,
@@ -414,6 +440,30 @@ type PeekPeerCfg struct {
 	// Ranges transfered to this instance from peers that scale-down will
 	// send Peek requests to those dying peers until it starts erroring.
 	WarmTime time.Duration `dialsdesc:"time after Universe creation at which one should consider the cache warm and to stop making Peek requests to peers"`
+
+	// PeekedValueMaxTTL and PeekedValueTTLJitter allow one to specify a maximum Time To Live (TTL) for
+	// the values in this Galaxy pulled from peers via Peek requests.
+	//
+	// Jitter may be 0 to always set the expiration to be exactly maxTTL time in
+	// the future.
+	//
+	// If a value has an Expiration time closer than maxTTL in the
+	// future it will be left alone no matter the source. Conversely, if there is
+	// no Expiration set, or it's farther in the future than maxTTL, a new one will
+	// be set based on the value of maxTTL and jitter.
+	//
+	// Setting a non-zero Jitter will randomly pick an expiry between maxTTL-Jitter
+	// and maxTTL in the future. When set appropriately, this can be leveraged to
+	// prevent values populated at about the same time from expiring
+	// simultaneously and causing a burst in activity while rehydrating values.
+	// When used, Jitter values should be large enough that, over a reasonable
+	// number of maxTTL intervals, keys that are continually accessed will
+	// spread their expiration across the entire interval.
+	//
+	// Negative TTLs and jitter values are silently ignored, and jitter values that
+	// are greater than maxTTL will be capped at maxTTL.
+	PeekedValueMaxTTL    time.Duration `dialsdesc:"max time in the future to allow a value pulled in via a Peek request have their expiration"`
+	PeekedValueTTLJitter time.Duration `dialsdesc:"max interval by to reduce the TTL by from PeekedValueMaxTTL"`
 }
 
 // Verify implements the [github.com/vimeo/dials.VerifiedConfig] interface
@@ -424,6 +474,14 @@ func (p *PeekPeerCfg) Verify() error {
 	if p.WarmTime < 0 {
 		return fmt.Errorf("WarmTime must be non-negative; got %s", p.WarmTime)
 	}
+
+	if p.PeekedValueMaxTTL < 0 {
+		return fmt.Errorf("PeekedValueMaxTTL should either be zero to disable, or positive; got %s", p.PeekedValueMaxTTL)
+	}
+	if p.PeekedValueTTLJitter < 0 {
+		return fmt.Errorf("PeekedValueTTLJitter should either be zero to disable jittering, or positive; got %s", p.PeekedValueTTLJitter)
+	}
+
 	return nil
 }
 
@@ -440,6 +498,14 @@ type galaxyOpts struct {
 	maxCandidates     int
 	clock             clocks.Clock
 	resetIdleStatsAge time.Duration
+	// parameters for capping the TTL on gets and peeks
+	getTTL ttlJitter
+	// peeks may be set separately to trigger delayed reloading around version
+	// upgrades (to prevent old versions of cache-values from persisting
+	// indefinitely -- may be O(days) with substantial jitter)
+	//
+	// Defaults to matching getTTL
+	peekTTL ttlJitter
 
 	peekPeer *PeekPeerCfg
 }
@@ -500,6 +566,44 @@ func WithIdleStatsAgeResetWindow(age time.Duration) GalaxyOption {
 func WithPreviousPeerPeeking(cfg PeekPeerCfg) GalaxyOption {
 	return newFuncGalaxyOption(func(g *galaxyOpts) {
 		g.peekPeer = &cfg
+		g.peekTTL = newTTLJitter(cfg.PeekedValueMaxTTL, cfg.PeekedValueTTLJitter)
+	})
+}
+
+func newTTLJitter(maxTTL, jitter time.Duration) ttlJitter {
+	if maxTTL <= 0 {
+		return ttlJitter{}
+	}
+	return ttlJitter{
+		entryMaxTTL:    maxTTL,
+		entryTTLJitter: min(max(jitter, 0), maxTTL),
+	}
+}
+
+// WithGetTTL allows the client to specify a maximum Time To Live (TTL) for the
+// values in this galaxy, with an optional jitter.
+//
+// Jitter may be 0 to always set the expiration to be exactly maxTTL time in
+// the future.
+//
+// If a value has an Expiration time closer than maxTTL in the
+// future it will be left alone no matter the source. Conversely, if there is
+// no Expiration set, or it's farther in the future than maxTTL, a new one will
+// be set based on the value of maxTTL and jitter.
+//
+// Setting a non-zero Jitter will randomly pick an expiry between maxTTL-Jitter
+// and maxTTL in the future. When set appropriately, this can be leveraged to
+// prevent values populated at about the same time from expiring
+// simultaneously and causing a burst in activity while rehydrating values.
+// When used, Jitter values should be large enough that, over a reasonable
+// number of maxTTL intervals, keys that are continually accessed will
+// spread their expiration across the entire interval.
+//
+// Negative TTLs and jitter values are silently ignored, and jitter values that
+// are greater than maxTTL will be capped at maxTTL.
+func WithGetTTL(maxTTL, jitter time.Duration) GalaxyOption {
+	return newFuncGalaxyOption(func(g *galaxyOpts) {
+		g.getTTL = newTTLJitter(maxTTL, jitter)
 	})
 }
 
@@ -896,6 +1000,29 @@ func (g *Galaxy) load(ctx context.Context, opts loadOpts, key string, dest Codec
 	return
 }
 
+type ttlJitter struct {
+	// if entryMaxTTL > 0, we'll cap the expiry at now + entryMaxTTL - math.Int64N(entryTTLJitter)
+	entryMaxTTL, entryTTLJitter time.Duration
+}
+
+func (g ttlJitter) capExpiry(clk clocks.Clock, bgInfo *BackendGetInfo) {
+	// initial common-case: no TTL set
+	if g.entryMaxTTL <= 0 {
+		return
+	}
+	now := clk.Now()
+	// We're done if the expiration is already closer than ttl + maxJitter
+	if !bgInfo.Expiration.IsZero() && bgInfo.Expiration.Sub(now) <= (g.entryMaxTTL+g.entryTTLJitter) {
+		return
+	}
+	// Either there's no expiration, or it's too far in the future so we need to adjust it downward.
+	newCapInterval := g.entryMaxTTL
+	if g.entryTTLJitter > 0 {
+		newCapInterval -= time.Duration(rand.Int64N(int64(g.entryTTLJitter)))
+	}
+	bgInfo.Expiration = now.Add(newCapInterval)
+}
+
 func (g *Galaxy) getLocally(ctx context.Context, key string, dest Codec) ([]byte, BackendGetInfo, error) {
 	startTime := time.Now()
 	defer func() {
@@ -906,6 +1033,7 @@ func (g *Galaxy) getLocally(ctx context.Context, key string, dest Codec) ([]byte
 		return nil, BackendGetInfo{}, err
 	}
 	mar, marErr := dest.MarshalBinary()
+	g.opts.getTTL.capExpiry(g.clock, &bgInfo)
 	return mar, bgInfo, marErr
 }
 
@@ -946,6 +1074,7 @@ func (g *Galaxy) peekPeer(ctx context.Context, key string) (valWithStat, Backend
 	// inserted into the main cache.
 
 	value := g.newValWithStat(peekVal, nil)
+	g.opts.peekTTL.capExpiry(g.clock, &bgInfo)
 	g.populateCache(ctx, key, value, &g.mainCache, bgInfo)
 
 	return value, bgInfo, nil
@@ -978,6 +1107,7 @@ func (g *Galaxy) getFromPeer(ctx context.Context, peer RemoteFetcherWithInfo, ke
 	if g.opts.promoter.ShouldPromote(key, value.data, stats) {
 		g.populateCache(ctx, key, value, &g.hotCache, bgInfo)
 	}
+	g.opts.getTTL.capExpiry(g.clock, &bgInfo)
 	return value, bgInfo, nil
 }
 
