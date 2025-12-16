@@ -1104,10 +1104,10 @@ func (g *Galaxy) getFromPeer(ctx context.Context, peer RemoteFetcherWithInfo, ke
 		HCStats: g.hcStatsWithTime.hcs,
 	}
 	value := g.newValWithStat(data, kStats)
+	g.opts.getTTL.capExpiry(g.clock, &bgInfo)
 	if g.opts.promoter.ShouldPromote(key, value.data, stats) {
 		g.populateCache(ctx, key, value, &g.hotCache, bgInfo)
 	}
-	g.opts.getTTL.capExpiry(g.clock, &bgInfo)
 	return value, bgInfo, nil
 }
 
