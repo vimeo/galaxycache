@@ -4,7 +4,7 @@ go 1.24.10
 
 require (
 	github.com/golang/protobuf v1.5.4
-	github.com/vimeo/galaxycache/compattest/peercfg v0.0.0-00010101000000-000000000000
+	github.com/vimeo/galaxycache/compattest/peercfg v0.0.0-20251208211800-872fc1d003d6
 	github.com/vimeo/go-clocks v1.3.0
 	go.opencensus.io v0.22.5
 	golang.org/x/sync v0.17.0

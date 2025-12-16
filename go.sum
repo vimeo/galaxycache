@@ -22,6 +22,8 @@ github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
+github.com/vimeo/galaxycache/compattest/peercfg v0.0.0-20251208211800-872fc1d003d6 h1:MkoIE/Uc/HFHVnER8EdRtt+UZa1Mp29QMm0Hkn77KXo=
+github.com/vimeo/galaxycache/compattest/peercfg v0.0.0-20251208211800-872fc1d003d6/go.mod h1:wjtRHtwdHRhP/HkJSaDDfBscxHX4g+h3GP5xU9IFOb8=
 github.com/vimeo/go-clocks v1.3.0 h1:6mSvNYB4Z8qwYIz2Xdp5/NU4vMf4cY4koerEFxyJJOw=
 github.com/vimeo/go-clocks v1.3.0/go.mod h1:GQ0ptP6CcJpmMeR7zi75pfy2ED69M/5tX4+aVPPPyvY=
 go.opencensus.io v0.22.5 h1:dntmOdLpSpHlVqbW5Eay97DelsZHe+55D+xC6i0dDS0=
