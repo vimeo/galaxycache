@@ -732,18 +732,20 @@ func (t *trackingNeverPromoter) ShouldPromote(key string, data []byte, stats pro
 func TestPromotion(t *testing.T) {
 	outerCtx := context.Background()
 	const testKey = "to-get"
+	fc := fake.NewClock(time.Now())
 	testCases := []struct {
 		testName    string
 		promoter    promoter.Interface
 		cacheSize   int64
-		firstCheck  func(ctx context.Context, t testing.TB, key string, val valWithStat, okCand bool, okHot bool, tf *TestFetcher, g *Galaxy)
-		secondCheck func(ctx context.Context, t testing.TB, key string, val valWithStat, okCand bool, okHot bool, tf *TestFetcher, g *Galaxy)
+		expiryCap   time.Duration
+		firstCheck  func(ctx context.Context, t testing.TB, key string, val valWithStat, okCand bool, okHot bool, exp time.Time, tf *TestFetcher, g *Galaxy)
+		secondCheck func(ctx context.Context, t testing.TB, key string, val valWithStat, okCand bool, okHot bool, exp time.Time, tf *TestFetcher, g *Galaxy)
 	}{
 		{
 			testName:  "never_promote",
 			promoter:  promoter.Func(func(key string, data []byte, stats promoter.Stats) bool { return false }),
 			cacheSize: 1 << 20,
-			firstCheck: func(_ context.Context, t testing.TB, _ string, _ valWithStat, okCand bool, okHot bool, _ *TestFetcher, _ *Galaxy) {
+			firstCheck: func(_ context.Context, t testing.TB, _ string, _ valWithStat, okCand bool, okHot bool, _ time.Time, _ *TestFetcher, _ *Galaxy) {
 				if !okCand {
 					t.Error("Candidate not found in candidate cache")
 				}
@@ -756,7 +758,7 @@ func TestPromotion(t *testing.T) {
 			testName:  "always_promote",
 			promoter:  promoter.Func(func(key string, data []byte, stats promoter.Stats) bool { return true }),
 			cacheSize: 1 << 20,
-			firstCheck: func(_ context.Context, t testing.TB, _ string, val valWithStat, _ bool, okHot bool, _ *TestFetcher, _ *Galaxy) {
+			firstCheck: func(_ context.Context, t testing.TB, _ string, val valWithStat, _ bool, okHot bool, _ time.Time, _ *TestFetcher, _ *Galaxy) {
 				if !okHot {
 					t.Error("Key not found in hotcache")
 				} else if val.data == nil {
@@ -765,10 +767,26 @@ func TestPromotion(t *testing.T) {
 			},
 		},
 		{
+			testName:  "always_promote_with_capped_expiry",
+			promoter:  promoter.Func(func(key string, data []byte, stats promoter.Stats) bool { return true }),
+			cacheSize: 1 << 20,
+			expiryCap: time.Hour,
+			firstCheck: func(_ context.Context, t testing.TB, _ string, val valWithStat, _ bool, okHot bool, exp time.Time, _ *TestFetcher, _ *Galaxy) {
+				if !okHot {
+					t.Error("Key not found in hotcache")
+				} else if val.data == nil {
+					t.Error("Found element in hotcache, but no associated data")
+				} else if !exp.Equal(fc.Now().Add(time.Hour)) {
+					t.Errorf("hotcache entry was added with an unexpected expiration timestamp: %s; expected %s",
+						exp, fc.Now().Add(time.Hour))
+				}
+			},
+		},
+		{
 			testName:  "candidate_promotion",
 			promoter:  &promoteFromCandidate{},
 			cacheSize: 1 << 20,
-			firstCheck: func(ctx context.Context, t testing.TB, key string, _ valWithStat, okCand bool, okHot bool, tf *TestFetcher, g *Galaxy) {
+			firstCheck: func(ctx context.Context, t testing.TB, key string, _ valWithStat, okCand bool, okHot bool, _ time.Time, tf *TestFetcher, g *Galaxy) {
 				if !okCand {
 					t.Error("Candidate not found in candidate cache")
 				}
@@ -789,7 +807,7 @@ func TestPromotion(t *testing.T) {
 			testName:  "never_promote_but_track",
 			promoter:  &trackingNeverPromoter{},
 			cacheSize: 1 << 20,
-			firstCheck: func(_ context.Context, t testing.TB, _ string, _ valWithStat, okCand bool, okHot bool, _ *TestFetcher, g *Galaxy) {
+			firstCheck: func(_ context.Context, t testing.TB, _ string, _ valWithStat, okCand bool, okHot bool, _ time.Time, _ *TestFetcher, g *Galaxy) {
 				if okHot {
 					t.Errorf("value unexpectedly in hot-cache")
 				}
@@ -811,7 +829,7 @@ func TestPromotion(t *testing.T) {
 					t.Errorf("first hit had non-zero QPS: %f", pro.stats[0].KeyQPS)
 				}
 			},
-			secondCheck: func(_ context.Context, t testing.TB, _ string, _ valWithStat, okCand bool, okHot bool, _ *TestFetcher, g *Galaxy) {
+			secondCheck: func(_ context.Context, t testing.TB, _ string, _ valWithStat, okCand bool, okHot bool, _ time.Time, _ *TestFetcher, g *Galaxy) {
 				if okHot {
 					t.Errorf("value unexpectedly in hot-cache")
 				}
@@ -848,15 +866,15 @@ func TestPromotion(t *testing.T) {
 			getter := func(_ context.Context, key string, dest Codec) error {
 				return dest.UnmarshalBinary([]byte("got:" + key))
 			}
-			universe := NewUniverse(testProto, "promotion-test")
+			universe := NewUniverse(testProto, "promotion-test", WithUniversalClock(fc))
 			universe.Set("foobar")
-			galaxy := universe.NewGalaxy("test-galaxy", tc.cacheSize, GetterFunc(getter), WithPromoter(tc.promoter))
+			galaxy := universe.NewGalaxy("test-galaxy", tc.cacheSize, GetterFunc(getter), WithPromoter(tc.promoter), WithGetTTL(tc.expiryCap, 0))
 			sc := StringCodec("")
 			{
 				galaxy.Get(ctx, testKey, &sc)
 				_, okCandidate := galaxy.candidateCache.get(testKey)
-				value, _, okHot := galaxy.hotCache.get(testKey)
-				tc.firstCheck(ctx, t, testKey, value, okCandidate, okHot, fetcher, galaxy)
+				value, exp, okHot := galaxy.hotCache.get(testKey)
+				tc.firstCheck(ctx, t, testKey, value, okCandidate, okHot, exp, fetcher, galaxy)
 			}
 			if tc.secondCheck == nil {
 				return
@@ -864,8 +882,8 @@ func TestPromotion(t *testing.T) {
 			{
 				galaxy.Get(ctx, testKey, &sc)
 				_, okCandidate := galaxy.candidateCache.get(testKey)
-				value, _, okHot := galaxy.hotCache.get(testKey)
-				tc.secondCheck(ctx, t, testKey, value, okCandidate, okHot, fetcher, galaxy)
+				value, exp, okHot := galaxy.hotCache.get(testKey)
+				tc.secondCheck(ctx, t, testKey, value, okCandidate, okHot, exp, fetcher, galaxy)
 			}
 
 		})
