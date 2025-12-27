@@ -38,14 +38,19 @@ func FNVHash(data []byte) uint32 {
 // Hash maps the data to a uint32 hash-ring
 type Hash func(data []byte) uint32
 
+// segment represents a hash ring entry containing both the hash value and the owner.
+type segment struct {
+	hash  uint32
+	owner string
+}
+
 // Map tracks segments in a hash-ring, mapped to specific keys.
 type Map struct {
 	hash       Hash
 	segsPerKey int
-	// keyHashes stores the sorted upper-bounds of every segment in the hash-ring.
-	keyHashes []uint32 // Sorted
-	// hashMap maps segment upper-bounds in keyHashes to the owner-key-names
-	hashMap map[uint32]string
+	// segments stores the sorted entries in the hash-ring, each containing
+	// the hash upper-bound and the owner-key-name.
+	segments []segment
 	// keys tracks which owner-keys are currently present in the hash-ring
 	keys map[string]struct{}
 }
@@ -56,7 +61,6 @@ func New(segsPerKey int, fn Hash) *Map {
 	m := &Map{
 		segsPerKey: segsPerKey,
 		hash:       fn,
-		hashMap:    make(map[uint32]string),
 		keys:       make(map[string]struct{}),
 	}
 	if m.hash == nil {
@@ -67,7 +71,7 @@ func New(segsPerKey int, fn Hash) *Map {
 
 // IsEmpty returns true if there are no items available.
 func (m *Map) IsEmpty() bool {
-	return len(m.keyHashes) == 0
+	return len(m.segments) == 0
 }
 
 // Get gets the closest item in the hash to the provided key.
@@ -84,29 +88,29 @@ func (m *Map) Get(key string) string {
 
 func (m *Map) findSegmentOwner(hash uint32) (int, uint32, string) {
 	// Binary search for appropriate replica.
-	idx := sort.Search(len(m.keyHashes), func(i int) bool { return m.keyHashes[i] >= hash })
+	idx := sort.Search(len(m.segments), func(i int) bool { return m.segments[i].hash >= hash })
 
 	// Means we have cycled back to the first replica.
-	if idx == len(m.keyHashes) {
+	if idx == len(m.segments) {
 		idx = 0
 	}
 
-	return idx, m.keyHashes[idx], m.hashMap[m.keyHashes[idx]]
+	return idx, m.segments[idx].hash, m.segments[idx].owner
 }
 
 func (m *Map) nextSegmentOwner(idx int) (int, uint32, string) {
 	if len(m.keys) == 1 {
 		panic("attempt to find alternate owner for single-key map")
 	}
-	if idx == len(m.keyHashes)-1 {
+	if idx == len(m.segments)-1 {
 		// if idx is len(m.keys)-1, then wrap around
-		return 0, m.keyHashes[0], m.hashMap[m.keyHashes[0]]
+		return 0, m.segments[0].hash, m.segments[0].owner
 	}
 
 	// we're moving forward within a ring; increment the index
 	idx++
 
-	return idx, m.keyHashes[idx], m.hashMap[m.keyHashes[idx]]
+	return idx, m.segments[idx].hash, m.segments[idx].owner
 }
 
 func (m *Map) idxedKeyReplica(key string, replica int) uint32 {

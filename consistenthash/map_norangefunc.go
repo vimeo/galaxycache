@@ -26,6 +26,11 @@ import (
 // Add adds some keys to the hashring, establishing ownership of segsPerKey
 // segments.
 func (m *Map) Add(keys ...string) {
+	hashToOwner := make(map[uint32]string, len(m.segments)+len(keys)*m.segsPerKey)
+	for _, seg := range m.segments {
+		hashToOwner[seg.hash] = seg.owner
+	}
+
 	for _, key := range keys {
 		m.keys[key] = struct{}{}
 		for i := 0; i < m.segsPerKey; i++ {
@@ -36,17 +41,18 @@ func (m *Map) Add(keys ...string) {
 			// It doesn't matter how we reconcile collisions (the smallest would work
 			// just as well), we just need it to be insertion-order independent so all
 			// instances converge on the same hashmap.
-			if extKey, ok := m.hashMap[hash]; !ok {
-				// Only add another member for this hash-value if there isn't
-				// one there already.
-				m.keyHashes = append(m.keyHashes, hash)
-			} else if extKey >= key {
+			if extKey, ok := hashToOwner[hash]; ok && extKey >= key {
 				continue
 			}
-			m.hashMap[hash] = key
+			hashToOwner[hash] = key
 		}
 	}
-	sort.Slice(m.keyHashes, func(i, j int) bool { return m.keyHashes[i] < m.keyHashes[j] })
+
+	m.segments = make([]segment, 0, len(hashToOwner))
+	for hash, owner := range hashToOwner {
+		m.segments = append(m.segments, segment{hash: hash, owner: owner})
+	}
+	sort.Slice(m.segments, func(i, j int) bool { return m.segments[i].hash < m.segments[j].hash })
 }
 
 // GetReplicated gets the closest item in the hash to a deterministic set of

@@ -75,14 +75,22 @@ func TestHashCollision(t *testing.T) {
 	hash2 := New(1, hashFunc)
 	hash2.Add("Bill", "Bonny", "Bob")
 
-	t.Log(hash1.hashMap[uint32('0')], hash2.hashMap[uint32('0')])
-	t.Logf("%+v", hash1.hashMap)
-	t.Logf("%v", hash1.keyHashes)
-	t.Logf("%+v", hash2.hashMap)
-	t.Logf("%v", hash2.keyHashes)
-	if hash1.hashMap[uint32('0')] != hash2.hashMap[uint32('0')] {
+	// Helper to find owner by hash value in segments
+	findOwner := func(m *Map, h uint32) string {
+		for _, seg := range m.segments {
+			if seg.hash == h {
+				return seg.owner
+			}
+		}
+		return ""
+	}
+
+	t.Log(findOwner(hash1, uint32('0')), findOwner(hash2, uint32('0')))
+	t.Logf("%+v", hash1.segments)
+	t.Logf("%+v", hash2.segments)
+	if findOwner(hash1, uint32('0')) != findOwner(hash2, uint32('0')) {
 		t.Errorf("inconsistent owner for hash %d: %s vs %s", 'B',
-			hash1.hashMap[uint32('B')], hash2.hashMap[uint32('B')])
+			findOwner(hash1, uint32('B')), findOwner(hash2, uint32('B')))
 	}
 }
 
