@@ -41,6 +41,11 @@ func (m *Map) ownerKeyHashes(ownerKey string) iter.Seq[uint32] {
 // Add adds some keys to the hashring, establishing ownership of segsPerKey
 // segments.
 func (m *Map) Add(ownerKeys ...string) {
+	hashToOwner := make(map[uint32]string, len(m.segments)+len(ownerKeys)*m.segsPerKey)
+	for _, seg := range m.segments {
+		hashToOwner[seg.hash] = seg.owner
+	}
+
 	for _, key := range ownerKeys {
 		m.keys[key] = struct{}{}
 		for hash := range m.ownerKeyHashes(key) {
@@ -50,17 +55,26 @@ func (m *Map) Add(ownerKeys ...string) {
 			// It doesn't matter how we reconcile collisions (the smallest would work
 			// just as well), we just need it to be insertion-order independent so all
 			// instances converge on the same hashmap.
-			if extKey, ok := m.hashMap[hash]; !ok {
-				// Only add another member for this hash-value if there isn't
-				// one there already.
-				m.keyHashes = append(m.keyHashes, hash)
-			} else if extKey >= key {
+			if extKey, ok := hashToOwner[hash]; ok && extKey >= key {
 				continue
 			}
-			m.hashMap[hash] = key
+			hashToOwner[hash] = key
 		}
 	}
-	slices.Sort(m.keyHashes)
+
+	m.segments = make([]segment, 0, len(hashToOwner))
+	for hash, owner := range hashToOwner {
+		m.segments = append(m.segments, segment{hash: hash, owner: owner})
+	}
+	slices.SortFunc(m.segments, func(a, b segment) int {
+		if a.hash < b.hash {
+			return -1
+		}
+		if a.hash > b.hash {
+			return 1
+		}
+		return 0
+	})
 }
 
 // returns the owner of the hash, and the upper-bound for that owner's segment
