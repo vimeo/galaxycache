@@ -22,7 +22,7 @@ limitations under the License.
 // The encoding scheme has three key design criteria: reasonable performance, simplicity and robustness
 //
 //   - All fields are separated by null bytes
-//   - Strings are prefixed with a varint length (as handled by encoding/binary)
+//   - Strings are prefixed with a varint length to eliminate any ambiguity (as handled by encoding/binary)
 //   - Integers are encoded as a varint.
 //
 // This design is inspired by
@@ -33,14 +33,17 @@ package cachekey
 import (
 	"encoding/binary"
 	"slices"
+
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // AppendStrID encodes a string ID into a form that can be concatenated into a V2 galaxycache key
 func AppendStrID[I ~string](buf []byte, id I) []byte {
-	// The IDs are currently guaranteed to be less than 127 bytes long, so
-	// we can assume that our varint length is exactly one byte.
-	buf = slices.Grow(buf, 2+len(id))
-	buf = binary.AppendUvarint(buf, uint64(len(id)))
+	// The IDs aren't guaranteed to be less than 127 bytes long, so compute the actual requirement
+	idLen := uint64(len(id))
+	vIntLen := protowire.SizeVarint(idLen)
+	buf = slices.Grow(buf, 1+len(id)+vIntLen)
+	buf = binary.AppendUvarint(buf, idLen)
 	buf = append(buf, id...)
 	// add the separating null-byte
 	buf = append(buf, byte('\000'))
