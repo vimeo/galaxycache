@@ -20,6 +20,7 @@ limitations under the License.
 package consistenthash
 
 import (
+	"cmp"
 	"iter"
 	"slices"
 	"strconv"
@@ -41,6 +42,9 @@ func (m *Map) ownerKeyHashes(ownerKey string) iter.Seq[uint32] {
 // Add adds some keys to the hashring, establishing ownership of segsPerKey
 // segments.
 func (m *Map) Add(ownerKeys ...string) {
+	// note: Add() is called several orders of magnitude less often than Get() and GetReplicated(),
+	// since hashrings should change slowly. Hence, it's beneficial to trade a smaller Map against
+	// doing a bit more work when calling Add (rebuilding the segments slice from scratch).
 	hashToOwner := make(map[uint32]string, len(m.segments)+len(ownerKeys)*m.segsPerKey)
 	for _, seg := range m.segments {
 		hashToOwner[seg.hash] = seg.owner
@@ -67,13 +71,7 @@ func (m *Map) Add(ownerKeys ...string) {
 		m.segments = append(m.segments, segment{hash: hash, owner: owner})
 	}
 	slices.SortFunc(m.segments, func(a, b segment) int {
-		if a.hash < b.hash {
-			return -1
-		}
-		if a.hash > b.hash {
-			return 1
-		}
-		return 0
+		return cmp.Compare(a.hash, b.hash)
 	})
 }
 
