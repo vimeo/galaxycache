@@ -91,26 +91,26 @@ func (m *Map) OwnerRangeSummary(ownerKey string, skipOverrideKeys int) (RangeSum
 	skipOverrideKeys = min(len(m.keys)-1, skipOverrideKeys)
 	ranges := make([]ownerRange, 0, m.segsPerKey)
 	for hash := range m.ownerKeyHashes(ownerKey) {
-		if skipOverrideKeys == 0 && m.hashMap[hash] != ownerKey {
+		idx, _, segOwner := m.findSegmentOwner(hash)
+		if skipOverrideKeys == 0 && segOwner != ownerKey {
 			// this ownerKey doesn't own this hash, and we're assuming that no one else is leaving the ring
 			continue
 		}
-		idx, _, _ := m.findSegmentOwner(hash)
 		lowerBound := uint32(0)
 		if idx <= skipOverrideKeys {
 			// too close to the beginning of the ring to simply index
 			// we have to wrap around.
-			wrappedLowerIdx := len(m.keyHashes) - (skipOverrideKeys - idx) - 1
+			wrappedLowerIdx := len(m.segments) - (skipOverrideKeys - idx) - 1
 			// first hash, so we'll wrap around for the lower-bound.
 			// lowerBound is already set to 0, so we don't need to touch that, but we do need to push a
-			// range for the tail of the last range in keyHashes.
+			// range for the tail of the last range in segments.
 			// ... but, only if the last key isn't MaxUint32.
-			if m.keyHashes[wrappedLowerIdx] != math.MaxUint32 {
-				ranges = append(ranges, ownerRange{low: m.keyHashes[wrappedLowerIdx] + 1, high: math.MaxUint32})
+			if m.segments[wrappedLowerIdx].hash != math.MaxUint32 {
+				ranges = append(ranges, ownerRange{low: m.segments[wrappedLowerIdx].hash + 1, high: math.MaxUint32})
 			}
 		} else {
 			// we're guaranteed to be able to index into the previous entry (and add 1 to it)
-			lowerBound = m.keyHashes[idx-skipOverrideKeys-1] + 1
+			lowerBound = m.segments[idx-skipOverrideKeys-1].hash + 1
 		}
 		// The upper-bound is fixed at this key's value. We're only traversing to lower values
 		// now, take care of filling in the upper-bound
@@ -125,8 +125,7 @@ func (m *Map) OwnerRangeSummary(ownerKey string, skipOverrideKeys int) (RangeSum
 		m: Map{
 			hash:       m.hash,
 			segsPerKey: m.segsPerKey,
-			keyHashes:  slices.Clone(m.keyHashes),
-			hashMap:    maps.Clone(m.hashMap),
+			segments:   slices.Clone(m.segments),
 			keys:       maps.Clone(m.keys),
 		},
 	}, true

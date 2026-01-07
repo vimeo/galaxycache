@@ -48,13 +48,10 @@ func FuzzHashCollision(f *testing.F) {
 		hash2 := New(int(segments), hashFunc)
 		hash2.Add(input[:]...)
 
-		if !reflect.DeepEqual(hash1.hashMap, hash2.hashMap) {
-			t.Errorf("hash maps are not identical: %+v vs %+v", hash1.hashMap, hash2.hashMap)
+		if !reflect.DeepEqual(hash1.segments, hash2.segments) {
+			t.Errorf("segments are not identical: %+v vs %+v", hash1.segments, hash2.segments)
 		}
 		if !reflect.DeepEqual(hash1.keys, hash2.keys) {
-			t.Errorf("hash keys are not identical: %+v vs %+v", hash1.keys, hash2.keys)
-		}
-		if !reflect.DeepEqual(hash1.keyHashes, hash2.keyHashes) {
 			t.Errorf("hash keys are not identical: %+v vs %+v", hash1.keys, hash2.keys)
 		}
 	})
