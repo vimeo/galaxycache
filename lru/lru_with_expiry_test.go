@@ -45,6 +45,11 @@ func TestTypedGetWithExpiry(t *testing.T) {
 		{name: "string_hit_expiring_big_jump", keyToAdd: "myKey", keyToGet: "myKey", keyExpiry: startTime.Add(time.Hour), setTime: startTime.Add(time.Hour * 24 * 365), expectedOK: false},
 		{name: "string_hit_expiring_exact_jump", keyToAdd: "myKey", keyToGet: "myKey", keyExpiry: startTime.Add(time.Hour), setTime: startTime.Add(time.Hour), expectedOK: false},
 		{name: "string_hit_expiring_jump_just_under", keyToAdd: "myKey", keyToGet: "myKey", keyExpiry: startTime.Add(time.Hour), setTime: startTime.Add(time.Hour - time.Nanosecond), expectedOK: true},
+		{name: "string_hit_zero_val_no_advance_prior_entry", keyToAdd: "fizzlebat", keyToGet: "fizzlebat", setTime: startTime, expectedOK: true},
+		{name: "string_hit_zero_val_big_jump_prior_entry", keyToAdd: "fizzlebat", keyToGet: "fizzlebat", setTime: startTime.Add(time.Hour * 24 * 365), expectedOK: true},
+		{name: "string_hit_expiring_big_jump_prior_entry", keyToAdd: "fizzlebat", keyToGet: "fizzlebat", keyExpiry: startTime.Add(time.Hour), setTime: startTime.Add(time.Hour * 24 * 365), expectedOK: false},
+		{name: "string_hit_expiring_exact_jump_prior_entry", keyToAdd: "fizzlebat", keyToGet: "fizzlebat", keyExpiry: startTime.Add(time.Hour), setTime: startTime.Add(time.Hour), expectedOK: false},
+		{name: "string_hit_expiring_jump_just_under_prior_entry", keyToAdd: "fizzlebat", keyToGet: "fizzlebat", keyExpiry: startTime.Add(time.Hour), setTime: startTime.Add(time.Hour - time.Nanosecond), expectedOK: true},
 	}
 
 	for _, tt := range getTests {
@@ -52,6 +57,8 @@ func TestTypedGetWithExpiry(t *testing.T) {
 			clk := fake.NewClock(startTime)
 			lru := TypedNew[string, int](0)
 			lru.Clock = clk
+			// add a pre-existing value that we can update with a different expiry
+			lru.AddExpiring("fizzlebat", 4321, startTime.Add(time.Minute))
 			lru.AddExpiring(tt.keyToAdd, 1234, tt.keyExpiry)
 
 			clk.SetClock(tt.setTime)
