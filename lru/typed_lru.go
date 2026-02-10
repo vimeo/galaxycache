@@ -121,8 +121,19 @@ func (c *TypedCache[K, V]) AddExpiring(key K, value V, expiration time.Time) {
 	if ele, hit := c.cache[key]; hit {
 		c.ll.MoveToFront(ele)
 		ele.value.value = value
+		// Remove the existing expiration handle from the heap before (possibly) adding a new one.
+		// this way we don't end up with both expirations in the heap.
+		if ele.value.hasExpiry {
+			c.expirations.Remove(ele.value.expHandle)
+		}
 		if !expiration.IsZero() {
 			ele.value.expHandle = c.expirations.Push(expiration, weak.Make(ele))
+			ele.value.hasExpiry = true
+			ele.value.expiry = expiration.Sub(c.expiryBase)
+		} else {
+			ele.value.expHandle = nil
+			ele.value.hasExpiry = false
+			ele.value.expiry = 0
 		}
 		return
 	}
